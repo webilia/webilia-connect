@@ -3,6 +3,7 @@
 namespace Webilia\Connect;
 
 use RuntimeException;
+use Webilia\Connect\Contracts\ConditionalConnectionStorage;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
 use Webilia\Connect\Exception\RequestException;
@@ -145,7 +146,9 @@ final class Client
         $completedConnection = new Connection($connection);
 
         try {
-            $this->storage->saveConnection($connection);
+            if (! $this->saveConnectionIfCurrent($connection, $previousConnection ? $previousConnection->credential() : null)) {
+                throw new RuntimeException('The Webilia Connect connection changed while this request was completing.');
+            }
         } catch (\Throwable $exception) {
             $this->revokeCredential($credential);
             $this->forgetCompletedPending($state);
@@ -177,13 +180,13 @@ final class Client
             if ($result->allowed()) {
                 $this->cacheAuthorization($cacheKey, $result);
             } elseif ($cacheKey !== null) {
-                $this->forgetCachedAuthorization($cacheKey);
+                $this->invalidateCachedAuthorization($cacheKey, $connection);
             }
 
             return $result;
         } catch (RequestException $exception) {
             if ($cacheKey !== null) {
-                $this->forgetCachedAuthorization($cacheKey);
+                $this->invalidateCachedAuthorization($cacheKey, $connection);
             }
             if ($exception->getCode() === 401) {
                 $this->forgetRejectedConnection($connection);
@@ -223,7 +226,7 @@ final class Client
         }
 
         if (! $connection->active() || ! $this->belongsToCurrentSite($connection)) {
-            $this->storage->forgetConnection();
+            $this->forgetConnectionIfCurrent($connection->credential());
 
             return;
         }
@@ -242,7 +245,7 @@ final class Client
             }
         }
 
-        $this->storage->forgetConnection();
+        $this->forgetConnectionIfCurrent($connection->credential());
     }
 
     private function requiredConnection(): Connection
@@ -315,10 +318,7 @@ final class Client
     private function forgetRejectedConnection(Connection $rejected): void
     {
         try {
-            $current = $this->connection();
-            if ($current && hash_equals($current->credential(), $rejected->credential())) {
-                $this->storage->forgetConnection();
-            }
+            $this->forgetConnectionIfCurrent($rejected->credential());
         } catch (\Throwable $exception) {
             // Preserve the authorization error when local cleanup cannot be completed.
         }
@@ -334,18 +334,35 @@ final class Client
 
         unset($payload['pending_revocation_credential']);
         try {
-            $this->storage->saveConnection($payload);
+            $this->saveConnectionIfCurrent($payload, $connection->credential());
         } catch (\Throwable $exception) {
             // Retain the encrypted cleanup record for a later retry.
         }
     }
 
-    private function forgetCachedAuthorization(string $cacheKey): void
+    private function invalidateCachedAuthorization(string $cacheKey, Connection $connection): void
     {
         try {
             $this->storage->forgetAuthorization($cacheKey);
+
+            return;
         } catch (\Throwable $exception) {
-            // The current API response remains authoritative when local cache cleanup fails.
+            $payload = $connection->payload();
+            $payload['authorization_cache_generation'] = $this->randomToken();
+
+            try {
+                if ($this->saveConnectionIfCurrent($payload, $connection->credential())) {
+                    return;
+                }
+            } catch (\Throwable $exception) {
+                // Fall through and fail closed by clearing this exact connection when possible.
+            }
+
+            try {
+                $this->forgetConnectionIfCurrent($connection->credential());
+            } catch (\Throwable $exception) {
+                // A broken local storage backend cannot guarantee cache invalidation.
+            }
         }
     }
 
@@ -356,6 +373,39 @@ final class Client
         } catch (\Throwable $exception) {
             // The connection is already durable; its expiring pending record is safe to leave behind.
         }
+    }
+
+    /** @param array<string, mixed> $connection */
+    private function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    {
+        if ($this->storage instanceof ConditionalConnectionStorage) {
+            return $this->storage->saveConnectionIfCurrent($connection, $expectedCredential);
+        }
+
+        $current = $this->connection();
+        if (($current ? $current->credential() : null) !== $expectedCredential) {
+            return false;
+        }
+
+        $this->storage->saveConnection($connection);
+
+        return true;
+    }
+
+    private function forgetConnectionIfCurrent(string $expectedCredential): bool
+    {
+        if ($this->storage instanceof ConditionalConnectionStorage) {
+            return $this->storage->forgetConnectionIfCurrent($expectedCredential);
+        }
+
+        $current = $this->connection();
+        if (! $current || ! hash_equals($current->credential(), $expectedCredential)) {
+            return false;
+        }
+
+        $this->storage->forgetConnection();
+
+        return true;
     }
 
     private function belongsToCurrentSite(Connection $connection): bool
@@ -395,7 +445,7 @@ final class Client
         $connectionId = $connection->id();
 
         return $connectionId !== null && $connectionId > 0
-            ? $connectionId.':'.hash('sha256', serialize([$connection->credential(), $integration, $capability]))
+            ? $connectionId.':'.hash('sha256', serialize([$connection->credential(), (string) ($connection->payload()['authorization_cache_generation'] ?? ''), $integration, $capability]))
             : null;
     }
 
@@ -414,7 +464,11 @@ final class Client
 
         $cacheUntil = min($cacheUntil ?? ($now + self::CACHE_SECONDS), $now + self::CACHE_SECONDS);
         if ($cacheUntil <= $now) {
-            $this->forgetCachedAuthorization($cacheKey);
+            try {
+                $this->storage->forgetAuthorization($cacheKey);
+            } catch (\Throwable $exception) {
+                // Expired cache entries are never accepted during an outage.
+            }
 
             return;
         }

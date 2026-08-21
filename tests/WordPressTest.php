@@ -42,6 +42,7 @@ class WordPressStorageTest extends TestCase
         $this->assertSame($pending, $storage->pending('state'));
         $this->assertArrayHasKey($option, WordPressTestState::$options);
         $this->assertArrayNotHasKey($option, WordPressTestState::$transients);
+        $this->assertArrayNotHasKey('webilia_connect_pending_requests_lock', WordPressTestState::$options);
     }
 
     public function test_saving_a_pending_request_cleans_expired_requests(): void
@@ -65,6 +66,21 @@ class WordPressStorageTest extends TestCase
 
         $this->assertSame($connection, $storage->connection());
         $this->assertArrayNotHasKey('webilia_connect_encryption_key', WordPressTestState::$options);
+    }
+
+    public function test_conditional_connection_write_and_delete_require_the_current_credential(): void
+    {
+        $storage = new WordPressStorage();
+        $connection = ['connection_id' => 1, 'credential' => 'wcx_test', 'site_url' => 'https://example.test', 'status' => 'active'];
+        $replacement = ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active'];
+        $storage->saveConnection($connection);
+
+        $this->assertFalse($storage->saveConnectionIfCurrent($replacement, 'wcx_other'));
+        $this->assertTrue($storage->saveConnectionIfCurrent($replacement, 'wcx_test'));
+        $this->assertFalse($storage->forgetConnectionIfCurrent('wcx_test'));
+        $this->assertTrue($storage->forgetConnectionIfCurrent('wcx_new'));
+        $this->assertNull($storage->connection());
+        $this->assertArrayNotHasKey('webilia_connect_connection_lock', WordPressTestState::$options);
     }
 }
 
@@ -134,7 +150,7 @@ class WordPressSequenceHttpClient implements HttpClient
     }
 }
 
-class WordPressMemoryStorage implements \Webilia\Connect\Contracts\Storage
+class WordPressMemoryStorage implements \Webilia\Connect\Contracts\Storage, \Webilia\Connect\Contracts\ConditionalConnectionStorage
 {
     /** @var array<string, mixed>|null */
     private $connection = [
@@ -146,7 +162,21 @@ class WordPressMemoryStorage implements \Webilia\Connect\Contracts\Storage
 
     public function connection(): ?array { return $this->connection; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    {
+        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        $this->connection = $connection;
+
+        return true;
+    }
     public function forgetConnection(): void { $this->connection = null; }
+    public function forgetConnectionIfCurrent(string $expectedCredential): bool
+    {
+        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        $this->connection = null;
+
+        return true;
+    }
     public function pending(string $state): ?array { return null; }
     public function savePending(array $pending): void {}
     public function forgetPending(string $state): void {}

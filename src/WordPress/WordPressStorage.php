@@ -3,13 +3,16 @@
 namespace Webilia\Connect\WordPress;
 
 use RuntimeException;
+use Webilia\Connect\Contracts\ConditionalConnectionStorage;
 use Webilia\Connect\Contracts\Storage;
 
-final class WordPressStorage implements Storage
+final class WordPressStorage implements Storage, ConditionalConnectionStorage
 {
     private const CONNECTION_OPTION = 'webilia_connect_connection';
+    private const CONNECTION_LOCK_OPTION = 'webilia_connect_connection_lock';
     private const ENCRYPTION_KEY_FILE = '.webilia-connect-key.php';
     private const PENDING_OPTION = 'webilia_connect_pending_requests';
+    private const PENDING_LOCK_OPTION = 'webilia_connect_pending_requests_lock';
     private const AUTHORIZATION_PREFIX = 'webilia_connect_authorization_';
 
     public function connection(): ?array
@@ -48,6 +51,21 @@ final class WordPressStorage implements Storage
         }
     }
 
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    {
+        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($connection, $expectedCredential): bool {
+            $current = $this->connection();
+            $currentCredential = is_array($current) ? (string) ($current['credential'] ?? '') : null;
+            if ($currentCredential !== $expectedCredential) {
+                return false;
+            }
+
+            $this->saveConnection($connection);
+
+            return true;
+        });
+    }
+
     public function forgetConnection(): void
     {
         if (! delete_option(self::CONNECTION_OPTION) && get_option(self::CONNECTION_OPTION, null) !== null) {
@@ -55,13 +73,29 @@ final class WordPressStorage implements Storage
         }
     }
 
+    public function forgetConnectionIfCurrent(string $expectedCredential): bool
+    {
+        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($expectedCredential): bool {
+            $current = $this->connection();
+            if (! is_array($current) || ! hash_equals((string) ($current['credential'] ?? ''), $expectedCredential)) {
+                return false;
+            }
+
+            $this->forgetConnection();
+
+            return true;
+        });
+    }
+
     public function pending(string $state): ?array
     {
-        $requests = $this->cleanPendingRequests($this->pendingRequests());
-        $this->savePendingRequests($requests);
-        $value = $requests[$state] ?? null;
+        return $this->withLock(self::PENDING_LOCK_OPTION, function () use ($state): ?array {
+            $requests = $this->cleanPendingRequests($this->pendingRequests());
+            $this->savePendingRequests($requests);
+            $value = $requests[$state] ?? null;
 
-        return is_array($value) && hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
+            return is_array($value) && hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
+        });
     }
 
     public function savePending(array $pending): void
@@ -77,16 +111,20 @@ final class WordPressStorage implements Storage
             throw new RuntimeException('The pending Webilia Connect request has expired.');
         }
 
-        $requests = $this->cleanPendingRequests($this->pendingRequests());
-        $requests[$state] = $pending;
-        $this->savePendingRequests($requests);
+        $this->withLock(self::PENDING_LOCK_OPTION, function () use ($state, $pending): void {
+            $requests = $this->cleanPendingRequests($this->pendingRequests());
+            $requests[$state] = $pending;
+            $this->savePendingRequests($requests);
+        });
     }
 
     public function forgetPending(string $state): void
     {
-        $requests = $this->cleanPendingRequests($this->pendingRequests());
-        unset($requests[$state]);
-        $this->savePendingRequests($requests);
+        $this->withLock(self::PENDING_LOCK_OPTION, function () use ($state): void {
+            $requests = $this->cleanPendingRequests($this->pendingRequests());
+            unset($requests[$state]);
+            $this->savePendingRequests($requests);
+        });
     }
 
     public function authorization(string $key): ?array
@@ -287,5 +325,34 @@ final class WordPressStorage implements Storage
     private function authorizationOption(string $key): string
     {
         return self::AUTHORIZATION_PREFIX.md5($key);
+    }
+
+    /** @template T @param callable(): T $callback @return T */
+    private function withLock(string $option, callable $callback)
+    {
+        $token = bin2hex(random_bytes(16));
+        $deadline = microtime(true) + 2;
+
+        do {
+            if (add_option($option, ['token' => $token, 'expires_at' => time() + 30], '', false)) {
+                try {
+                    return $callback();
+                } finally {
+                    $lock = get_option($option, null);
+                    if (is_array($lock) && hash_equals((string) ($lock['token'] ?? ''), $token)) {
+                        delete_option($option);
+                    }
+                }
+            }
+
+            $lock = get_option($option, null);
+            if (is_array($lock) && (int) ($lock['expires_at'] ?? 0) < time()) {
+                delete_option($option);
+            }
+
+            usleep(50000);
+        } while (microtime(true) < $deadline);
+
+        throw new RuntimeException('Unable to obtain the Webilia Connect storage lock.');
     }
 }
