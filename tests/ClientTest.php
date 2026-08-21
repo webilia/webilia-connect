@@ -104,6 +104,24 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_a_401_authorization_failure_retries_cleanup_after_a_revision_race(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new RacingRejectionStorage($connection);
+
+        $this->expectException(RequestException::class);
+        try {
+            (new Client(new SequenceHttpClient([
+                new TransientException('Network unavailable'),
+                new RequestException('Connection revoked', 401),
+            ]), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+        } finally {
+            $this->assertNull($storage->connection());
+        }
+    }
+
     public function test_a_fresh_authorization_succeeds_when_cache_writing_fails(): void
     {
         $storage = new FailingAuthorizationWriteStorage($this->connection());
@@ -863,6 +881,29 @@ class GenerationChangingRevocationStorage extends InMemoryStorage
         ]);
 
         return false;
+    }
+}
+
+class RacingRejectionStorage extends InMemoryStorage
+{
+    private bool $raced = false;
+
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
+    {
+        if (! $this->raced) {
+            $this->raced = true;
+            $this->saveConnection([
+                'connection_id' => 1,
+                'credential' => 'wcx_test',
+                'site_url' => 'https://example.test',
+                'status' => 'active',
+                'connection_revision' => 'newer',
+            ]);
+
+            return false;
+        }
+
+        return parent::saveConnectionIfCurrent($connection, $expectedCredential, $expectedRevision);
     }
 }
 

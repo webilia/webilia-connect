@@ -353,16 +353,24 @@ final class Client
     private function forgetRejectedConnection(Connection $rejected): void
     {
         try {
-            $payload = $rejected->payload();
-            if ((string) ($payload['pending_revocation_credential'] ?? '') !== '') {
-                $payload['status'] = 'revoked';
-                $payload['connection_revision'] = $this->randomToken();
-                $this->saveConnectionIfCurrent($payload, $rejected);
+            $current = $rejected;
+            for ($attempt = 0; $attempt < 2; ++$attempt) {
+                $payload = $current->payload();
+                if ((string) ($payload['pending_revocation_credential'] ?? '') !== '') {
+                    $payload['status'] = 'revoked';
+                    $payload['connection_revision'] = $this->randomToken();
+                    if ($this->saveConnectionIfCurrent($payload, $current)) {
+                        return;
+                    }
+                } elseif ($this->forgetConnectionIfCurrent($current)) {
+                    return;
+                }
 
-                return;
+                $current = $this->connection();
+                if (! $current || ! hash_equals($current->credential(), $rejected->credential())) {
+                    return;
+                }
             }
-
-            $this->forgetConnectionIfCurrent($rejected);
         } catch (\Throwable $exception) {
             // Preserve the authorization error when local cleanup cannot be completed.
         }
