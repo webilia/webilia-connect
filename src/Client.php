@@ -124,15 +124,14 @@ final class Client
 
         $completedConnection = new Connection($connection);
         if (! $this->belongsToCurrentSite($completedConnection)) {
+            $this->revokeCredential($credential);
+            $this->forgetCompletedPending($state);
+
             throw new RuntimeException('Webilia Connect returned a connection for a different website.');
         }
 
         $this->storage->saveConnection($connection);
-        try {
-            $this->storage->forgetPending($state);
-        } catch (\Throwable $exception) {
-            // The connection is already durable; its expiring pending record is safe to leave behind.
-        }
+        $this->forgetCompletedPending($state);
 
         return $completedConnection;
     }
@@ -191,6 +190,12 @@ final class Client
     public function disconnect(): void
     {
         $connection = $this->activeConnection();
+        if (! $this->belongsToCurrentSite($connection)) {
+            $this->storage->forgetConnection();
+
+            return;
+        }
+
         try {
             $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection)));
         } catch (RequestException $exception) {
@@ -248,6 +253,26 @@ final class Client
     private function randomToken(): string
     {
         return rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
+    }
+
+    private function revokeCredential(string $credential): void
+    {
+        try {
+            $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], [
+                'Authorization' => 'Bearer '.$credential,
+            ]));
+        } catch (\Throwable $exception) {
+            // Preserve the site-mismatch error even when its best-effort remote cleanup fails.
+        }
+    }
+
+    private function forgetCompletedPending(string $state): void
+    {
+        try {
+            $this->storage->forgetPending($state);
+        } catch (\Throwable $exception) {
+            // The connection is already durable; its expiring pending record is safe to leave behind.
+        }
     }
 
     private function belongsToCurrentSite(Connection $connection): bool

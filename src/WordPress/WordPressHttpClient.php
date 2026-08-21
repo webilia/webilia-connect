@@ -22,7 +22,12 @@ final class WordPressHttpClient implements HttpClient
         }
 
         $status = (int) wp_remote_retrieve_response_code($response);
-        $body = json_decode((string) wp_remote_retrieve_body($response), true);
+        $rawBody = (string) wp_remote_retrieve_body($response);
+        if ($status >= 200 && $status < 300 && trim($rawBody) === '') {
+            return [];
+        }
+
+        $body = json_decode($rawBody, true);
         if (! is_array($body)) {
             if ($this->isTransientStatus($status)) {
                 throw new TransientException('Webilia Connect returned an invalid response.');

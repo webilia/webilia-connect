@@ -6,6 +6,14 @@ Each product ships a scoped build of this package, but every build uses the same
 site-wide `webilia_connect_connection` record and the same API protocol. Do not
 log the connection credential or expose it in plugin UI.
 
+## Credential encryption
+
+The connection credential is encrypted before it is stored in WordPress. Set a
+unique `WEBILIA_CONNECT_KEY` constant in `wp-config.php` to manage that key
+material explicitly. Otherwise, the SDK creates a protected
+`.webilia-connect-key.php` file in `WP_CONTENT_DIR`; retain that file when
+migrating the site. The encryption key is never stored in `wp_options`.
+
 ## Release compatibility
 
 The Composer source namespace is `Webilia\\Connect`. WordPress product releases

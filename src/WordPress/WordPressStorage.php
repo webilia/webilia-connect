@@ -8,7 +8,7 @@ use Webilia\Connect\Contracts\Storage;
 final class WordPressStorage implements Storage
 {
     private const CONNECTION_OPTION = 'webilia_connect_connection';
-    private const ENCRYPTION_KEY_OPTION = 'webilia_connect_encryption_key';
+    private const ENCRYPTION_KEY_FILE = '.webilia-connect-key.php';
     private const PENDING_PREFIX = 'webilia_connect_pending_';
     private const AUTHORIZATION_PREFIX = 'webilia_connect_authorization_';
 
@@ -149,31 +149,58 @@ final class WordPressStorage implements Storage
 
     private function key(): string
     {
-        $stored = $this->storedKey(get_option(self::ENCRYPTION_KEY_OPTION, ''));
+        if (defined('WEBILIA_CONNECT_KEY') && (string) WEBILIA_CONNECT_KEY !== '') {
+            return hash('sha256', (string) WEBILIA_CONNECT_KEY.':webilia-connect', true);
+        }
+
+        $path = $this->keyPath();
+        $stored = $this->storedFileKey($path);
         if ($stored !== null) {
             return $stored;
         }
 
         $key = random_bytes(32);
-        if (add_option(self::ENCRYPTION_KEY_OPTION, base64_encode($key), '', false)) {
-            return $key;
+        $handle = @fopen($path, 'x');
+        if ($handle === false) {
+            $stored = $this->storedFileKey($path);
+            if ($stored !== null) {
+                return $stored;
+            }
+
+            throw new RuntimeException('Unable to create the Webilia connection encryption key.');
         }
 
-        $stored = $this->storedKey(get_option(self::ENCRYPTION_KEY_OPTION, ''));
-        if ($stored !== null) {
-            return $stored;
+        $contents = "<?php\nif (! defined('ABSPATH')) { exit; }\n\nreturn '".base64_encode($key)."';\n";
+        $written = fwrite($handle, $contents);
+        fclose($handle);
+        if ($written !== strlen($contents)) {
+            @unlink($path);
+
+            throw new RuntimeException('Unable to create the Webilia connection encryption key.');
         }
 
-        throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+        @chmod($path, 0600);
+
+        return $key;
     }
 
-    private function storedKey($value): ?string
+    private function keyPath(): string
     {
-        if (! is_string($value)) {
+        if (! defined('WP_CONTENT_DIR') || ! is_string(WP_CONTENT_DIR) || WP_CONTENT_DIR === '') {
+            throw new RuntimeException('Webilia Connect requires a writable WordPress content directory.');
+        }
+
+        return rtrim(WP_CONTENT_DIR, '/\\').DIRECTORY_SEPARATOR.self::ENCRYPTION_KEY_FILE;
+    }
+
+    private function storedFileKey(string $path): ?string
+    {
+        if (! is_readable($path)) {
             return null;
         }
 
-        $key = base64_decode($value, true);
+        $encoded = include $path;
+        $key = is_string($encoded) ? base64_decode($encoded, true) : false;
 
         return is_string($key) && strlen($key) === 32 ? $key : null;
     }

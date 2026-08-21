@@ -12,6 +12,7 @@ class WordPressStorageTest extends TestCase
     {
         WordPressTestState::$options = [];
         WordPressTestState::$transients = [];
+        WordPressTestState::$salt = 'initial';
     }
 
     public function test_authorization_cache_is_a_transient(): void
@@ -51,6 +52,19 @@ class WordPressStorageTest extends TestCase
         WordPressTestState::$salt = 'rotated';
 
         $this->assertSame($connection, $storage->connection());
+        $this->assertArrayNotHasKey('webilia_connect_encryption_key', WordPressTestState::$options);
+    }
+}
+
+class WordPressHttpClientTest extends TestCase
+{
+    public function test_empty_successful_response_returns_an_empty_payload(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 204, 'body' => ''];
+
+        $payload = (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/disconnect', []);
+
+        $this->assertSame([], $payload);
     }
 }
 
@@ -136,6 +150,8 @@ class WordPressTestState
     /** @var array<string, array{value:mixed, expires_at:int}> */
     public static $transients = [];
     public static $salt = 'initial';
+    /** @var array{status:int, body:string} */
+    public static $httpResponse = ['status' => 200, 'body' => '{}'];
 }
 
 function add_filter($hook, $callback, $priority = 10, $acceptedArgs = 1): void {}
@@ -219,4 +235,28 @@ function wp_json_encode($value): string
 function wp_salt($scheme = 'auth'): string
 {
     return WordPressTestState::$salt;
+}
+
+function wp_remote_post($url, array $args)
+{
+    return WordPressTestState::$httpResponse;
+}
+
+function is_wp_error($thing): bool
+{
+    return false;
+}
+
+function wp_remote_retrieve_response_code(array $response): int
+{
+    return $response['status'];
+}
+
+function wp_remote_retrieve_body(array $response): string
+{
+    return $response['body'];
+}
+
+if (! defined('WEBILIA_CONNECT_KEY')) {
+    define('WEBILIA_CONNECT_KEY', 'webilia-connect-test-key');
 }

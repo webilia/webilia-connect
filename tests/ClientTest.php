@@ -164,11 +164,38 @@ class ClientTest extends TestCase
     public function test_a_mismatched_connection_can_be_disconnected(): void
     {
         $storage = new InMemoryStorage($this->connection());
-        $client = new Client(new SuccessfulHttpClient([]), $storage, 'https://api.webilia.test', 'https://clone.test');
+        $http = new CountingHttpClient();
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://clone.test');
 
         $client->disconnect();
 
         $this->assertNull($storage->connection());
+        $this->assertSame(0, $http->calls());
+    }
+
+    public function test_mismatched_exchange_credential_is_revoked(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $http = new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_mismatch', 'site_url' => 'https://wrong.test', 'status' => 'active']],
+            [],
+        ]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame(2, $http->calls());
+            $this->assertSame(['Authorization' => 'Bearer wcx_mismatch'], $http->headers(1));
+            $this->assertNull($storage->pending('state'));
+        }
     }
 
     public function test_authorization_cache_keys_do_not_collide(): void
@@ -323,6 +350,34 @@ class CountingHttpClient implements HttpClient
     public function calls(): int
     {
         return $this->calls;
+    }
+}
+
+class SequenceHttpClient implements HttpClient
+{
+    private array $responses;
+    private array $headers = [];
+
+    public function __construct(array $responses)
+    {
+        $this->responses = $responses;
+    }
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        $this->headers[] = $headers;
+
+        return array_shift($this->responses) ?? [];
+    }
+
+    public function calls(): int
+    {
+        return count($this->headers);
+    }
+
+    public function headers(int $index): array
+    {
+        return $this->headers[$index] ?? [];
     }
 }
 
