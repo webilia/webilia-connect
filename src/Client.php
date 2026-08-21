@@ -31,7 +31,9 @@ final class Client
 
     public function isConnected(): bool
     {
-        return (bool) ($this->connection() && $this->connection()->active());
+        $connection = $this->connection();
+
+        return $connection !== null && $connection->active();
     }
 
     /**

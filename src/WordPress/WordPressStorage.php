@@ -30,7 +30,9 @@ final class WordPressStorage implements Storage
 
     public function forgetConnection(): void
     {
-        delete_option(self::CONNECTION_OPTION);
+        if (! delete_option(self::CONNECTION_OPTION) && get_option(self::CONNECTION_OPTION, null) !== null) {
+            throw new RuntimeException('Unable to remove the Webilia connection credential.');
+        }
     }
 
     public function pending(): ?array
@@ -42,7 +44,9 @@ final class WordPressStorage implements Storage
 
     public function savePending(array $pending): void
     {
-        update_option(self::PENDING_OPTION, $pending, false);
+        if (! update_option(self::PENDING_OPTION, $pending, false) && get_option(self::PENDING_OPTION, null) !== $pending) {
+            throw new RuntimeException('Unable to save the pending Webilia Connect request.');
+        }
     }
 
     public function forgetPending(): void

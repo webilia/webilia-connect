@@ -43,10 +43,13 @@ final class UpdateClient implements UpdateClientContract
 
         $update = (object) [
             'slug' => $this->slug,
+            'plugin' => $this->basename,
             'new_version' => $info['new_version'],
             'url' => $info['url'] ?? '',
             'package' => $info['download_link'] ?? '',
             'tested' => $info['tested'] ?? '',
+            'requires' => $info['requires'] ?? '',
+            'requires_php' => $info['requires_php'] ?? '',
             'icons' => (array) ($info['icons'] ?? []),
         ];
         $transient->response[$this->basename] = $update;
@@ -62,7 +65,7 @@ final class UpdateClient implements UpdateClientContract
 
         $info = $this->information();
         if (! $info) {
-            return false;
+            return $false;
         }
 
         $info['slug'] = $info['slug'] ?? $this->slug;

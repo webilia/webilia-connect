@@ -91,6 +91,15 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_is_connected_reads_the_connection_once(): void
+    {
+        $storage = new ReadOnceStorage($this->connection());
+        $client = new Client(new SuccessfulHttpClient([]), $storage);
+
+        $this->assertTrue($client->isConnected());
+        $this->assertSame(1, $storage->connectionReads());
+    }
+
     private function connection(): array
     {
         return [
@@ -149,4 +158,32 @@ class InMemoryStorage implements Storage
     public function authorization(string $key): ?array { return $this->authorizations[$key] ?? null; }
     public function saveAuthorization(string $key, array $authorization): void { $this->authorizations[$key] = $authorization; }
     public function forgetAuthorization(string $key): void { unset($this->authorizations[$key]); }
+}
+
+class ReadOnceStorage implements Storage
+{
+    private ?array $connection;
+    private int $reads = 0;
+
+    public function __construct(array $connection)
+    {
+        $this->connection = $connection;
+    }
+
+    public function connection(): ?array
+    {
+        ++$this->reads;
+
+        return $this->reads === 1 ? $this->connection : null;
+    }
+
+    public function connectionReads(): int { return $this->reads; }
+    public function saveConnection(array $connection): void { $this->connection = $connection; }
+    public function forgetConnection(): void { $this->connection = null; }
+    public function pending(): ?array { return null; }
+    public function savePending(array $pending): void {}
+    public function forgetPending(): void {}
+    public function authorization(string $key): ?array { return null; }
+    public function saveAuthorization(string $key, array $authorization): void {}
+    public function forgetAuthorization(string $key): void {}
 }
