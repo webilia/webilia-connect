@@ -15,12 +15,14 @@ final class Client
     private HttpClient $http;
     private Storage $storage;
     private string $apiUrl;
+    private string $siteUrl;
 
-    public function __construct(HttpClient $http, Storage $storage, string $apiUrl = 'https://api.webilia.com')
+    public function __construct(HttpClient $http, Storage $storage, string $apiUrl = 'https://api.webilia.com', string $siteUrl = '')
     {
         $this->http = $http;
         $this->storage = $storage;
         $this->apiUrl = rtrim($apiUrl, '/');
+        $this->siteUrl = $this->normalizeSiteUrl($siteUrl !== '' ? $siteUrl : $this->wordpressSiteUrl());
     }
 
     public function connection(): ?Connection
@@ -34,7 +36,7 @@ final class Client
     {
         $connection = $this->connection();
 
-        return $connection !== null && $connection->active();
+        return $connection !== null && $connection->active() && $this->belongsToCurrentSite($connection);
     }
 
     /**
@@ -110,6 +112,11 @@ final class Client
             'updated_at' => time(),
         ];
 
+        $completedConnection = new Connection($connection);
+        if (! $this->belongsToCurrentSite($completedConnection)) {
+            throw new RuntimeException('Webilia Connect returned a connection for a different website.');
+        }
+
         $this->storage->saveConnection($connection);
         try {
             $this->storage->forgetPending($state);
@@ -117,7 +124,7 @@ final class Client
             // The connection is already durable; its expiring pending record is safe to leave behind.
         }
 
-        return new Connection($connection);
+        return $completedConnection;
     }
 
     public function authorize(string $integration, string $capability): AuthorizationResult
@@ -188,7 +195,7 @@ final class Client
     private function requiredConnection(): Connection
     {
         $connection = $this->connection();
-        if (! $connection || ! $connection->active()) {
+        if (! $connection || ! $connection->active() || ! $this->belongsToCurrentSite($connection)) {
             throw new RuntimeException('This website is not connected to Webilia.');
         }
 
@@ -205,7 +212,7 @@ final class Client
     private function data(array $response): array
     {
         if (($response['success'] ?? true) === false) {
-            throw new RuntimeException((string) ($response['message'] ?? 'Webilia Connect request failed.'));
+            throw new RequestException((string) ($response['message'] ?? 'Webilia Connect request failed.'));
         }
 
         $data = $response['data'] ?? $response;
@@ -221,6 +228,31 @@ final class Client
     private function randomToken(): string
     {
         return rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
+    }
+
+    private function belongsToCurrentSite(Connection $connection): bool
+    {
+        return $this->siteUrl === '' || $this->siteUrl === $this->normalizeSiteUrl($connection->siteUrl());
+    }
+
+    private function wordpressSiteUrl(): string
+    {
+        return function_exists('get_site_url') ? (string) get_site_url() : '';
+    }
+
+    private function normalizeSiteUrl(string $siteUrl): string
+    {
+        $parts = parse_url($siteUrl);
+        if (! is_array($parts) || empty($parts['scheme']) || empty($parts['host'])) {
+            return rtrim($siteUrl, '/');
+        }
+
+        $normalized = strtolower((string) $parts['scheme']).'://'.strtolower((string) $parts['host']);
+        if (isset($parts['port'])) {
+            $normalized .= ':'.$parts['port'];
+        }
+
+        return $normalized.rtrim((string) ($parts['path'] ?? ''), '/');
     }
 
     private function cacheKey(string $integration, string $capability, Connection $connection): ?string

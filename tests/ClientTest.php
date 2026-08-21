@@ -4,6 +4,7 @@ namespace Webilia\Connect\Tests;
 
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
+use Webilia\Connect\AuthorizationResult;
 use Webilia\Connect\Client;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
@@ -41,6 +42,27 @@ class ClientTest extends TestCase
         } catch (RequestException $exception) {
             $this->assertNull($storage->authorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use')));
         }
+    }
+
+    public function test_authorization_evicts_a_cached_allowance_for_an_application_failure(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $key = $this->authorizationKey('vertex-addons-pro', 'vertex.pro.use');
+        $storage->saveAuthorization($key, ['allowed' => true, 'cache_until' => time() + 60]);
+        $client = new Client(new SuccessfulHttpClient(['success' => false, 'message' => 'Connection revoked']), $storage);
+
+        try {
+            $client->authorize('vertex-addons-pro', 'vertex.pro.use');
+            $this->fail('Expected an application-level authorization failure.');
+        } catch (RequestException $exception) {
+            $this->assertNull($storage->authorization($key));
+        }
+    }
+
+    public function test_authorization_requires_a_boolean_allowance(): void
+    {
+        $this->assertFalse((new AuthorizationResult(['allowed' => 'false']))->allowed());
+        $this->assertTrue((new AuthorizationResult(['allowed' => true]))->allowed());
     }
 
     public function test_authorization_does_not_reuse_a_previous_connections_cache(): void
@@ -102,6 +124,20 @@ class ClientTest extends TestCase
 
         $this->assertTrue($client->isConnected());
         $this->assertSame(1, $storage->connectionReads());
+    }
+
+    public function test_a_connection_copied_to_a_different_site_is_rejected(): void
+    {
+        $client = new Client(
+            new SuccessfulHttpClient([]),
+            new InMemoryStorage($this->connection()),
+            'https://api.webilia.test',
+            'https://clone.test'
+        );
+
+        $this->assertFalse($client->isConnected());
+        $this->expectException(RuntimeException::class);
+        $client->authorize('vertex-addons-pro', 'vertex.pro.use');
     }
 
     public function test_authorization_cache_keys_do_not_collide(): void

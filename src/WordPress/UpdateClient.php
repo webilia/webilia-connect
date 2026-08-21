@@ -39,7 +39,7 @@ final class UpdateClient implements UpdateClientContract
         }
 
         $info = $this->information();
-        if (! $info || empty($info['new_version']) || version_compare($this->version, (string) $info['new_version'], '>=')) {
+        if (! $info || empty($info['new_version']) || empty($info['download_link']) || version_compare($this->version, (string) $info['new_version'], '>=')) {
             return $transient;
         }
 
@@ -88,7 +88,7 @@ final class UpdateClient implements UpdateClientContract
 
             $update = $this->connect->update($this->integration, $this->basename, $this->version, $this->coreVersion);
 
-            return ! empty($update['allowed']) ? $update : null;
+            return ($update['allowed'] ?? null) === true ? $update : null;
         } catch (\Throwable $exception) {
             return null;
         }

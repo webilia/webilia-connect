@@ -8,6 +8,7 @@ use Webilia\Connect\Contracts\Storage;
 final class WordPressStorage implements Storage
 {
     private const CONNECTION_OPTION = 'webilia_connect_connection';
+    private const ENCRYPTION_KEY_OPTION = 'webilia_connect_encryption_key';
     private const PENDING_PREFIX = 'webilia_connect_pending_';
     private const AUTHORIZATION_PREFIX = 'webilia_connect_authorization_';
 
@@ -71,23 +72,31 @@ final class WordPressStorage implements Storage
 
     public function authorization(string $key): ?array
     {
-        $value = get_option($this->authorizationOption($key), []);
+        $value = get_transient($this->authorizationOption($key));
 
         return is_array($value) ? $value : null;
     }
 
     public function saveAuthorization(string $key, array $authorization): void
     {
-        $option = $this->authorizationOption($key);
-        if (! update_option($option, $authorization, false) && get_option($option, null) !== $authorization) {
+        $cacheUntil = (int) ($authorization['cache_until'] ?? 0);
+        $expiration = $cacheUntil - time();
+        if ($expiration <= 0) {
+            $this->forgetAuthorization($key);
+
+            return;
+        }
+
+        $transient = $this->authorizationOption($key);
+        if (! set_transient($transient, $authorization, $expiration) && get_transient($transient) !== $authorization) {
             throw new RuntimeException('Unable to save the cached Webilia Connect authorization.');
         }
     }
 
     public function forgetAuthorization(string $key): void
     {
-        $option = $this->authorizationOption($key);
-        if (! delete_option($option) && get_option($option, null) !== null) {
+        $transient = $this->authorizationOption($key);
+        if (! delete_transient($transient) && get_transient($transient) !== false) {
             throw new RuntimeException('Unable to remove the cached Webilia Connect authorization.');
         }
     }
@@ -132,7 +141,33 @@ final class WordPressStorage implements Storage
 
     private function key(): string
     {
-        return hash('sha256', wp_salt('auth').':webilia-connect', true);
+        $stored = $this->storedKey(get_option(self::ENCRYPTION_KEY_OPTION, ''));
+        if ($stored !== null) {
+            return $stored;
+        }
+
+        $key = random_bytes(32);
+        if (add_option(self::ENCRYPTION_KEY_OPTION, base64_encode($key), '', false)) {
+            return $key;
+        }
+
+        $stored = $this->storedKey(get_option(self::ENCRYPTION_KEY_OPTION, ''));
+        if ($stored !== null) {
+            return $stored;
+        }
+
+        throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+    }
+
+    private function storedKey($value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $key = base64_decode($value, true);
+
+        return is_string($key) && strlen($key) === 32 ? $key : null;
     }
 
     private function pendingOption(string $state): string

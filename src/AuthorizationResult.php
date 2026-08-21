@@ -17,7 +17,7 @@ final class AuthorizationResult implements AuthorizationResultContract
 
     public function allowed(): bool
     {
-        return (bool) ($this->payload['allowed'] ?? false);
+        return ($this->payload['allowed'] ?? null) === true;
     }
 
     public function reason(): ?string
