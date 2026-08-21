@@ -9,7 +9,7 @@ final class WordPressStorage implements Storage
 {
     private const CONNECTION_OPTION = 'webilia_connect_connection';
     private const ENCRYPTION_KEY_FILE = '.webilia-connect-key.php';
-    private const PENDING_PREFIX = 'webilia_connect_pending_';
+    private const PENDING_OPTION = 'webilia_connect_pending_requests';
     private const AUTHORIZATION_PREFIX = 'webilia_connect_authorization_';
 
     public function connection(): ?array
@@ -57,17 +57,11 @@ final class WordPressStorage implements Storage
 
     public function pending(string $state): ?array
     {
-        $option = $this->pendingOption($state);
-        $value = get_option($option, []);
-        if (! is_array($value) || (int) ($value['expires_at'] ?? 0) < time()) {
-            if (is_array($value)) {
-                $this->forgetPending($state);
-            }
+        $requests = $this->cleanPendingRequests($this->pendingRequests());
+        $this->savePendingRequests($requests);
+        $value = $requests[$state] ?? null;
 
-            return null;
-        }
-
-        return hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
+        return is_array($value) && hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
     }
 
     public function savePending(array $pending): void
@@ -83,18 +77,16 @@ final class WordPressStorage implements Storage
             throw new RuntimeException('The pending Webilia Connect request has expired.');
         }
 
-        $option = $this->pendingOption($state);
-        if (! update_option($option, $pending, false) && get_option($option, null) !== $pending) {
-            throw new RuntimeException('Unable to save the pending Webilia Connect request.');
-        }
+        $requests = $this->cleanPendingRequests($this->pendingRequests());
+        $requests[$state] = $pending;
+        $this->savePendingRequests($requests);
     }
 
     public function forgetPending(string $state): void
     {
-        $option = $this->pendingOption($state);
-        if (! delete_option($option) && get_option($option, null) !== null) {
-            throw new RuntimeException('Unable to remove the pending Webilia Connect request.');
-        }
+        $requests = $this->cleanPendingRequests($this->pendingRequests());
+        unset($requests[$state]);
+        $this->savePendingRequests($requests);
     }
 
     public function authorization(string $key): ?array
@@ -256,9 +248,40 @@ final class WordPressStorage implements Storage
         return $this->storedFileKey($this->keyPath());
     }
 
-    private function pendingOption(string $state): string
+    /** @return array<string, array<string, mixed>> */
+    private function pendingRequests(): array
     {
-        return self::PENDING_PREFIX.hash('sha256', $state);
+        $requests = get_option(self::PENDING_OPTION, []);
+
+        return is_array($requests) ? $requests : [];
+    }
+
+    /** @param array<string, array<string, mixed>> $requests @return array<string, array<string, mixed>> */
+    private function cleanPendingRequests(array $requests): array
+    {
+        foreach ($requests as $state => $request) {
+            if (! is_array($request) || (int) ($request['expires_at'] ?? 0) < time()) {
+                unset($requests[$state]);
+            }
+        }
+
+        return $requests;
+    }
+
+    /** @param array<string, array<string, mixed>> $requests */
+    private function savePendingRequests(array $requests): void
+    {
+        if ($requests === []) {
+            if (! delete_option(self::PENDING_OPTION) && get_option(self::PENDING_OPTION, null) !== null) {
+                throw new RuntimeException('Unable to remove the pending Webilia Connect request.');
+            }
+
+            return;
+        }
+
+        if (! update_option(self::PENDING_OPTION, $requests, false) && get_option(self::PENDING_OPTION, null) !== $requests) {
+            throw new RuntimeException('Unable to save the pending Webilia Connect request.');
+        }
     }
 
     private function authorizationOption(string $key): string

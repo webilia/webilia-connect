@@ -36,12 +36,24 @@ class WordPressStorageTest extends TestCase
     {
         $storage = new WordPressStorage();
         $pending = ['state' => 'state', 'verifier' => 'verifier', 'expires_at' => time() + 60];
-        $option = 'webilia_connect_pending_'.hash('sha256', 'state');
+        $option = 'webilia_connect_pending_requests';
         $storage->savePending($pending);
 
         $this->assertSame($pending, $storage->pending('state'));
         $this->assertArrayHasKey($option, WordPressTestState::$options);
         $this->assertArrayNotHasKey($option, WordPressTestState::$transients);
+    }
+
+    public function test_saving_a_pending_request_cleans_expired_requests(): void
+    {
+        WordPressTestState::$options['webilia_connect_pending_requests'] = [
+            'expired' => ['state' => 'expired', 'expires_at' => time() - 1],
+        ];
+        $storage = new WordPressStorage();
+        $storage->savePending(['state' => 'active', 'verifier' => 'verifier', 'expires_at' => time() + 60]);
+
+        $this->assertArrayNotHasKey('expired', WordPressTestState::$options['webilia_connect_pending_requests']);
+        $this->assertSame('active', WordPressTestState::$options['webilia_connect_pending_requests']['active']['state']);
     }
 
     public function test_connection_remains_readable_after_authentication_salt_rotation(): void

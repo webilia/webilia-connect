@@ -104,6 +104,13 @@ final class Client
         }
 
         $previousConnection = $this->connection();
+        if ($previousConnection) {
+            $this->retryPendingRevocation($previousConnection);
+            $previousConnection = $this->connection();
+            if ($previousConnection && (string) ($previousConnection->payload()['pending_revocation_credential'] ?? '') !== '') {
+                throw new RuntimeException('Unable to replace the existing Webilia connection until its previous credential is revoked.');
+            }
+        }
         $response = $this->http->post($this->endpoint('/v1/connect/exchanges'), [
             'code' => $code,
             'code_verifier' => (string) $pending['verifier'],
@@ -132,13 +139,10 @@ final class Client
         }
 
         if ($previousConnection && $previousConnection->active() && $this->belongsToCurrentSite($previousConnection) && $previousConnection->credential() !== $credential) {
-            if (! $this->revokeCredential($previousConnection->credential())) {
-                $this->revokeCredential($credential);
-                $this->forgetCompletedPending($state);
-
-                throw new RuntimeException('Unable to replace the existing Webilia connection. Please try again.');
-            }
+            $connection['pending_revocation_credential'] = $previousConnection->credential();
         }
+
+        $completedConnection = new Connection($connection);
 
         try {
             $this->storage->saveConnection($connection);
@@ -150,6 +154,7 @@ final class Client
         }
 
         $this->forgetCompletedPending($state);
+        $this->retryPendingRevocation($completedConnection);
 
         return $completedConnection;
     }
@@ -157,6 +162,7 @@ final class Client
     public function authorize(string $integration, string $capability): AuthorizationResult
     {
         $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
         $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
         try {
@@ -171,13 +177,13 @@ final class Client
             if ($result->allowed()) {
                 $this->cacheAuthorization($cacheKey, $result);
             } elseif ($cacheKey !== null) {
-                $this->storage->forgetAuthorization($cacheKey);
+                $this->forgetCachedAuthorization($cacheKey);
             }
 
             return $result;
         } catch (RequestException $exception) {
             if ($cacheKey !== null) {
-                $this->storage->forgetAuthorization($cacheKey);
+                $this->forgetCachedAuthorization($cacheKey);
             }
             if ($exception->getCode() === 401) {
                 $this->forgetRejectedConnection($connection);
@@ -200,6 +206,7 @@ final class Client
     public function update(string $integration, string $basename, string $version, string $coreVersion = ''): array
     {
         $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
 
         return $this->data($this->http->post($this->endpoint('/v1/connect/integrations/'.rawurlencode($integration).'/updates'), [
             'basename' => $basename,
@@ -219,6 +226,12 @@ final class Client
             $this->storage->forgetConnection();
 
             return;
+        }
+
+        $this->retryPendingRevocation($connection);
+        $connection = $this->connection();
+        if (! $connection || (string) ($connection->payload()['pending_revocation_credential'] ?? '') !== '') {
+            throw new RuntimeException('Unable to disconnect until the previous Webilia credential is revoked.');
         }
 
         try {
@@ -289,6 +302,10 @@ final class Client
 
             return true;
         } catch (\Throwable $exception) {
+            if ($exception instanceof RequestException && $exception->getCode() === 401) {
+                return true;
+            }
+
             // Callers decide whether a failed best-effort cleanup may be ignored.
 
             return false;
@@ -304,6 +321,31 @@ final class Client
             }
         } catch (\Throwable $exception) {
             // Preserve the authorization error when local cleanup cannot be completed.
+        }
+    }
+
+    private function retryPendingRevocation(Connection $connection): void
+    {
+        $payload = $connection->payload();
+        $credential = (string) ($payload['pending_revocation_credential'] ?? '');
+        if ($credential === '' || ! $this->revokeCredential($credential)) {
+            return;
+        }
+
+        unset($payload['pending_revocation_credential']);
+        try {
+            $this->storage->saveConnection($payload);
+        } catch (\Throwable $exception) {
+            // Retain the encrypted cleanup record for a later retry.
+        }
+    }
+
+    private function forgetCachedAuthorization(string $cacheKey): void
+    {
+        try {
+            $this->storage->forgetAuthorization($cacheKey);
+        } catch (\Throwable $exception) {
+            // The current API response remains authoritative when local cache cleanup fails.
         }
     }
 
@@ -353,7 +395,7 @@ final class Client
         $connectionId = $connection->id();
 
         return $connectionId !== null && $connectionId > 0
-            ? $connectionId.':'.hash('sha256', serialize([$integration, $capability]))
+            ? $connectionId.':'.hash('sha256', serialize([$connection->credential(), $integration, $capability]))
             : null;
     }
 
@@ -372,12 +414,16 @@ final class Client
 
         $cacheUntil = min($cacheUntil ?? ($now + self::CACHE_SECONDS), $now + self::CACHE_SECONDS);
         if ($cacheUntil <= $now) {
-            $this->storage->forgetAuthorization($cacheKey);
+            $this->forgetCachedAuthorization($cacheKey);
 
             return;
         }
 
         $payload['cache_until'] = $cacheUntil;
-        $this->storage->saveAuthorization($cacheKey, $payload);
+        try {
+            $this->storage->saveAuthorization($cacheKey, $payload);
+        } catch (\Throwable $exception) {
+            // A fresh API authorization is valid even if its outage cache cannot be written.
+        }
     }
 }

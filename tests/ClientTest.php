@@ -57,6 +57,27 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_a_401_authorization_failure_removes_the_connection_when_cache_cleanup_fails(): void
+    {
+        $storage = new FailingAuthorizationCleanupStorage($this->connection());
+        $client = new Client(new RevokedHttpClient(), $storage);
+
+        $this->expectException(RequestException::class);
+        try {
+            $client->authorize('vertex-addons-pro', 'vertex.pro.use');
+        } finally {
+            $this->assertNull($storage->connection());
+        }
+    }
+
+    public function test_a_fresh_authorization_succeeds_when_cache_writing_fails(): void
+    {
+        $storage = new FailingAuthorizationWriteStorage($this->connection());
+        $client = new Client(new SuccessfulHttpClient(['data' => ['allowed' => true]]), $storage);
+
+        $this->assertTrue($client->authorize('vertex-addons-pro', 'vertex.pro.use')->allowed());
+    }
+
     public function test_authorization_evicts_a_cached_allowance_for_an_application_failure(): void
     {
         $storage = new InMemoryStorage($this->connection());
@@ -243,9 +264,8 @@ class ClientTest extends TestCase
         try {
             $client->complete('code', 'state');
         } finally {
-            $this->assertSame(3, $http->calls());
-            $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
-            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(2));
+            $this->assertSame(2, $http->calls());
+            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(1));
             $this->assertNull($storage->pending('state'));
         }
     }
@@ -288,15 +308,12 @@ class ClientTest extends TestCase
         ]);
         $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
 
-        $this->expectException(RuntimeException::class);
-        try {
-            $client->complete('code', 'state');
-        } finally {
-            $this->assertSame(3, $http->calls());
-            $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
-            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(2));
-            $this->assertSame('wcx_test', $storage->connection()['credential']);
-        }
+        $client->complete('code', 'state');
+
+        $this->assertSame(2, $http->calls());
+        $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
+        $this->assertSame('wcx_new', $storage->connection()['credential']);
+        $this->assertSame('wcx_test', $storage->connection()['pending_revocation_credential']);
     }
 
     public function test_default_site_ports_match_the_same_site(): void
@@ -397,7 +414,7 @@ class ClientTest extends TestCase
 
     private function authorizationKey(string $integration, string $capability): string
     {
-        return '1:'.hash('sha256', serialize([$integration, $capability]));
+        return '1:'.hash('sha256', serialize(['wcx_test', $integration, $capability]));
     }
 }
 
@@ -572,5 +589,21 @@ class FailingConnectionStorage extends InMemoryStorage
     public function saveConnection(array $connection): void
     {
         throw new RuntimeException('Unable to persist the connection.');
+    }
+}
+
+class FailingAuthorizationCleanupStorage extends InMemoryStorage
+{
+    public function forgetAuthorization(string $key): void
+    {
+        throw new RuntimeException('Unable to clear the authorization cache.');
+    }
+}
+
+class FailingAuthorizationWriteStorage extends InMemoryStorage
+{
+    public function saveAuthorization(string $key, array $authorization): void
+    {
+        throw new RuntimeException('Unable to write the authorization cache.');
     }
 }
