@@ -19,7 +19,26 @@ final class WordPressStorage implements Storage
             return null;
         }
 
-        return $this->decrypt($value);
+        $connection = $this->decrypt($value, $this->key());
+        if ($connection !== null) {
+            return $connection;
+        }
+
+        $legacyKey = $this->legacyFileKey();
+        if ($legacyKey === null) {
+            return null;
+        }
+
+        $connection = $this->decrypt($value, $legacyKey);
+        if ($connection === null) {
+            return null;
+        }
+
+        if (! update_option(self::CONNECTION_OPTION, $this->encrypt($connection), false)) {
+            throw new RuntimeException('Unable to migrate the Webilia connection credential.');
+        }
+
+        return $connection;
     }
 
     public function saveConnection(array $connection): void
@@ -131,7 +150,7 @@ final class WordPressStorage implements Storage
     }
 
     /** @return array<string, mixed>|null */
-    private function decrypt(string $value): ?array
+    private function decrypt(string $value, string $key): ?array
     {
         $binary = base64_decode($value, true);
         if ($binary === false || strlen($binary) < 29) {
@@ -141,7 +160,7 @@ final class WordPressStorage implements Storage
         $iv = substr($binary, 0, 12);
         $tag = substr($binary, 12, 16);
         $ciphertext = substr($binary, 28);
-        $json = openssl_decrypt($ciphertext, 'aes-256-gcm', $this->key(), OPENSSL_RAW_DATA, $iv, $tag);
+        $json = openssl_decrypt($ciphertext, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
         $payload = is_string($json) ? json_decode($json, true) : null;
 
         return is_array($payload) ? $payload : null;
@@ -160,7 +179,9 @@ final class WordPressStorage implements Storage
         }
 
         $key = random_bytes(32);
+        $previousUmask = umask(0077);
         $handle = @fopen($path, 'x');
+        umask($previousUmask);
         if ($handle === false) {
             $stored = $this->storedFileKey($path);
             if ($stored !== null) {
@@ -168,6 +189,15 @@ final class WordPressStorage implements Storage
             }
 
             throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+        }
+
+        clearstatcache(true, $path);
+        $permissions = @fileperms($path);
+        if (! is_int($permissions) || ($permissions & 0077) !== 0) {
+            fclose($handle);
+            @unlink($path);
+
+            throw new RuntimeException('Unable to secure the Webilia connection encryption key.');
         }
 
         $contents = "<?php\nif (! defined('ABSPATH')) { exit; }\n\nreturn '".base64_encode($key)."';\n";
@@ -210,7 +240,7 @@ final class WordPressStorage implements Storage
     {
         clearstatcache(true, $path);
         $permissions = @fileperms($path);
-        if (! is_readable($path) || ! is_int($permissions) || ($permissions & 0777) !== 0600) {
+        if (! is_readable($path) || ! is_int($permissions) || ($permissions & 0077) !== 0) {
             return null;
         }
 
@@ -218,6 +248,15 @@ final class WordPressStorage implements Storage
         $key = is_string($encoded) ? base64_decode($encoded, true) : false;
 
         return is_string($key) && strlen($key) === 32 ? $key : null;
+    }
+
+    private function legacyFileKey(): ?string
+    {
+        if (! defined('WEBILIA_CONNECT_KEY') || (string) WEBILIA_CONNECT_KEY === '') {
+            return null;
+        }
+
+        return $this->storedFileKey($this->keyPath());
     }
 
     private function pendingOption(string $state): string

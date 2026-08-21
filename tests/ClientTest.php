@@ -236,6 +236,28 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_replaced_connection_credential_is_revoked(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $http = new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active']],
+            [],
+        ]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $client->complete('code', 'state');
+
+        $this->assertSame(2, $http->calls());
+        $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
+        $this->assertSame('wcx_new', $storage->connection()['credential']);
+    }
+
     public function test_authorization_cache_keys_do_not_collide(): void
     {
         $storage = new InMemoryStorage($this->connection());

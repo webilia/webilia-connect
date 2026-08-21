@@ -103,6 +103,7 @@ final class Client
             throw new RuntimeException('This Webilia Connect request belongs to a different website.');
         }
 
+        $previousConnection = $this->connection();
         $response = $this->http->post($this->endpoint('/v1/connect/exchanges'), [
             'code' => $code,
             'code_verifier' => (string) $pending['verifier'],
@@ -140,6 +141,9 @@ final class Client
         }
 
         $this->forgetCompletedPending($state);
+        if ($previousConnection && $previousConnection->active() && $this->belongsToCurrentSite($previousConnection) && $previousConnection->credential() !== $credential) {
+            $this->revokeCredential($previousConnection->credential());
+        }
 
         return $completedConnection;
     }
