@@ -51,12 +51,13 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         }
     }
 
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
-        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($connection, $expectedCredential): bool {
+        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($connection, $expectedCredential, $expectedRevision): bool {
             $current = $this->connection();
             $currentCredential = is_array($current) ? (string) ($current['credential'] ?? '') : null;
-            if ($currentCredential !== $expectedCredential) {
+            $currentRevision = is_array($current) && isset($current['connection_revision']) ? (string) $current['connection_revision'] : null;
+            if ($currentCredential !== $expectedCredential || $currentRevision !== $expectedRevision) {
                 return false;
             }
 
@@ -73,11 +74,13 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         }
     }
 
-    public function forgetConnectionIfCurrent(string $expectedCredential): bool
+    public function forgetConnectionIfCurrent(string $expectedCredential, ?string $expectedRevision): bool
     {
-        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($expectedCredential): bool {
+        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($expectedCredential, $expectedRevision): bool {
             $current = $this->connection();
-            if (! is_array($current) || ! hash_equals((string) ($current['credential'] ?? ''), $expectedCredential)) {
+            if (! is_array($current)
+                || ! hash_equals((string) ($current['credential'] ?? ''), $expectedCredential)
+                || (isset($current['connection_revision']) ? (string) $current['connection_revision'] : null) !== $expectedRevision) {
                 return false;
             }
 
@@ -240,7 +243,7 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
                 return $stored;
             }
 
-            throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+            return $this->createKeyFileWithoutHardLink($path, $contents, $key);
         }
 
         @unlink($temporaryPath);
@@ -267,6 +270,54 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         $key = is_string($encoded) ? base64_decode($encoded, true) : false;
 
         return is_string($key) && strlen($key) === 32 ? $key : null;
+    }
+
+    private function createKeyFileWithoutHardLink(string $path, string $contents, string $key): string
+    {
+        $lockPath = $path.'.lock';
+        $previousUmask = umask(0077);
+        $lock = @fopen($lockPath, 'c');
+        umask($previousUmask);
+        if ($lock === false || ! flock($lock, LOCK_EX)) {
+            if (is_resource($lock)) {
+                fclose($lock);
+            }
+
+            throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+        }
+
+        try {
+            $stored = $this->storedFileKey($path);
+            if ($stored !== null) {
+                return $stored;
+            }
+
+            $temporaryPath = $path.'.'.bin2hex(random_bytes(12)).'.tmp.php';
+            $previousUmask = umask(0077);
+            $handle = @fopen($temporaryPath, 'x');
+            umask($previousUmask);
+            if ($handle === false || ! $this->privateKeyFile($temporaryPath)) {
+                if (is_resource($handle)) {
+                    fclose($handle);
+                }
+                @unlink($temporaryPath);
+
+                throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+            }
+
+            $written = fwrite($handle, $contents);
+            fclose($handle);
+            if ($written !== strlen($contents) || ! @rename($temporaryPath, $path)) {
+                @unlink($temporaryPath);
+
+                throw new RuntimeException('Unable to create the Webilia connection encryption key.');
+            }
+
+            return $key;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     private function privateKeyFile(string $path): bool
@@ -334,25 +385,45 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         $deadline = microtime(true) + 2;
 
         do {
-            if (add_option($option, ['token' => $token, 'expires_at' => time() + 30], '', false)) {
+            $lock = ['token' => $token, 'expires_at' => time() + 30];
+            if (add_option($option, $lock, '', false)) {
                 try {
                     return $callback();
                 } finally {
-                    $lock = get_option($option, null);
-                    if (is_array($lock) && hash_equals((string) ($lock['token'] ?? ''), $token)) {
-                        delete_option($option);
-                    }
+                    $this->deleteLockIfCurrent($option, $lock);
                 }
             }
 
             $lock = get_option($option, null);
             if (is_array($lock) && (int) ($lock['expires_at'] ?? 0) < time()) {
-                delete_option($option);
+                $this->deleteLockIfCurrent($option, $lock);
             }
 
             usleep(50000);
         } while (microtime(true) < $deadline);
 
         throw new RuntimeException('Unable to obtain the Webilia Connect storage lock.');
+    }
+
+    /** @param array<string, mixed> $lock */
+    private function deleteLockIfCurrent(string $option, array $lock): bool
+    {
+        global $wpdb;
+
+        if (isset($wpdb) && is_object($wpdb) && isset($wpdb->options) && method_exists($wpdb, 'prepare') && method_exists($wpdb, 'query')) {
+            $query = $wpdb->prepare(
+                'DELETE FROM '.$wpdb->options.' WHERE option_name = %s AND option_value = %s',
+                $option,
+                serialize($lock)
+            );
+            $deleted = $wpdb->query($query);
+            if (function_exists('wp_cache_delete')) {
+                wp_cache_delete($option, 'options');
+            }
+
+            return $deleted === 1;
+        }
+
+        return get_option($option, null) === $lock && delete_option($option);
     }
 }

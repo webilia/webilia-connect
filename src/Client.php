@@ -128,6 +128,7 @@ final class Client
             'credential' => $credential,
             'site_url' => (string) ($data['site_url'] ?? $pending['site_url']),
             'status' => (string) ($data['status'] ?? 'active'),
+            'connection_revision' => $this->randomToken(),
             'updated_at' => time(),
         ];
 
@@ -146,7 +147,7 @@ final class Client
         $completedConnection = new Connection($connection);
 
         try {
-            if (! $this->saveConnectionIfCurrent($connection, $previousConnection ? $previousConnection->credential() : null)) {
+            if (! $this->saveConnectionIfCurrent($connection, $previousConnection)) {
                 throw new RuntimeException('The Webilia Connect connection changed while this request was completing.');
             }
         } catch (\Throwable $exception) {
@@ -166,6 +167,7 @@ final class Client
     {
         $connection = $this->requiredConnection();
         $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
         $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
         try {
@@ -185,11 +187,11 @@ final class Client
 
             return $result;
         } catch (RequestException $exception) {
-            if ($cacheKey !== null) {
-                $this->invalidateCachedAuthorization($cacheKey, $connection);
-            }
             if ($exception->getCode() === 401) {
                 $this->forgetRejectedConnection($connection);
+            }
+            if ($cacheKey !== null) {
+                $this->invalidateCachedAuthorization($cacheKey, $connection);
             }
 
             throw $exception;
@@ -210,12 +212,21 @@ final class Client
     {
         $connection = $this->requiredConnection();
         $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
 
-        return $this->data($this->http->post($this->endpoint('/v1/connect/integrations/'.rawurlencode($integration).'/updates'), [
-            'basename' => $basename,
-            'version' => $version,
-            'core_version' => $coreVersion,
-        ], $this->bearer($connection)));
+        try {
+            return $this->data($this->http->post($this->endpoint('/v1/connect/integrations/'.rawurlencode($integration).'/updates'), [
+                'basename' => $basename,
+                'version' => $version,
+                'core_version' => $coreVersion,
+            ], $this->bearer($connection)));
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
+
+            throw $exception;
+        }
     }
 
     public function disconnect(): void
@@ -226,16 +237,20 @@ final class Client
         }
 
         if (! $connection->active() || ! $this->belongsToCurrentSite($connection)) {
-            $this->forgetConnectionIfCurrent($connection->credential());
+            $this->forgetConnectionIfCurrent($connection);
 
             return;
         }
 
         $this->retryPendingRevocation($connection);
-        $connection = $this->connection();
-        if (! $connection || (string) ($connection->payload()['pending_revocation_credential'] ?? '') !== '') {
+        $currentConnection = $this->connection();
+        if (! $currentConnection
+            || ! hash_equals($connection->credential(), $currentConnection->credential())
+            || (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') !== '') {
             throw new RuntimeException('Unable to disconnect until the previous Webilia credential is revoked.');
         }
+
+        $connection = $currentConnection;
 
         try {
             $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection)));
@@ -245,7 +260,7 @@ final class Client
             }
         }
 
-        $this->forgetConnectionIfCurrent($connection->credential());
+        $this->forgetConnectionIfCurrent($connection);
     }
 
     private function requiredConnection(): Connection
@@ -318,7 +333,7 @@ final class Client
     private function forgetRejectedConnection(Connection $rejected): void
     {
         try {
-            $this->forgetConnectionIfCurrent($rejected->credential());
+            $this->forgetConnectionIfCurrent($rejected);
         } catch (\Throwable $exception) {
             // Preserve the authorization error when local cleanup cannot be completed.
         }
@@ -333,8 +348,9 @@ final class Client
         }
 
         unset($payload['pending_revocation_credential']);
+        $payload['connection_revision'] = $this->randomToken();
         try {
-            $this->saveConnectionIfCurrent($payload, $connection->credential());
+            $this->saveConnectionIfCurrent($payload, $connection);
         } catch (\Throwable $exception) {
             // Retain the encrypted cleanup record for a later retry.
         }
@@ -349,9 +365,10 @@ final class Client
         } catch (\Throwable $exception) {
             $payload = $connection->payload();
             $payload['authorization_cache_generation'] = $this->randomToken();
+            $payload['connection_revision'] = $this->randomToken();
 
             try {
-                if ($this->saveConnectionIfCurrent($payload, $connection->credential())) {
+                if ($this->saveConnectionIfCurrent($payload, $connection)) {
                     return;
                 }
             } catch (\Throwable $exception) {
@@ -359,7 +376,7 @@ final class Client
             }
 
             try {
-                $this->forgetConnectionIfCurrent($connection->credential());
+                $this->forgetConnectionIfCurrent($connection);
             } catch (\Throwable $exception) {
                 // A broken local storage backend cannot guarantee cache invalidation.
             }
@@ -376,14 +393,16 @@ final class Client
     }
 
     /** @param array<string, mixed> $connection */
-    private function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    private function saveConnectionIfCurrent(array $connection, ?Connection $expectedConnection): bool
     {
+        $expectedCredential = $expectedConnection ? $expectedConnection->credential() : null;
+        $expectedRevision = $this->connectionRevision($expectedConnection);
         if ($this->storage instanceof ConditionalConnectionStorage) {
-            return $this->storage->saveConnectionIfCurrent($connection, $expectedCredential);
+            return $this->storage->saveConnectionIfCurrent($connection, $expectedCredential, $expectedRevision);
         }
 
         $current = $this->connection();
-        if (($current ? $current->credential() : null) !== $expectedCredential) {
+        if (($current ? $current->credential() : null) !== $expectedCredential || $this->connectionRevision($current) !== $expectedRevision) {
             return false;
         }
 
@@ -392,20 +411,31 @@ final class Client
         return true;
     }
 
-    private function forgetConnectionIfCurrent(string $expectedCredential): bool
+    private function forgetConnectionIfCurrent(Connection $expectedConnection): bool
     {
+        $expectedCredential = $expectedConnection->credential();
+        $expectedRevision = $this->connectionRevision($expectedConnection);
         if ($this->storage instanceof ConditionalConnectionStorage) {
-            return $this->storage->forgetConnectionIfCurrent($expectedCredential);
+            return $this->storage->forgetConnectionIfCurrent($expectedCredential, $expectedRevision);
         }
 
         $current = $this->connection();
-        if (! $current || ! hash_equals($current->credential(), $expectedCredential)) {
+        if (! $current || ! hash_equals($current->credential(), $expectedCredential) || $this->connectionRevision($current) !== $expectedRevision) {
             return false;
         }
 
         $this->storage->forgetConnection();
 
         return true;
+    }
+
+    private function connectionRevision(?Connection $connection): ?string
+    {
+        if (! $connection || ! isset($connection->payload()['connection_revision'])) {
+            return null;
+        }
+
+        return (string) $connection->payload()['connection_revision'];
     }
 
     private function belongsToCurrentSite(Connection $connection): bool

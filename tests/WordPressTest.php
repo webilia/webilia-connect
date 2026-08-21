@@ -75,10 +75,10 @@ class WordPressStorageTest extends TestCase
         $replacement = ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active'];
         $storage->saveConnection($connection);
 
-        $this->assertFalse($storage->saveConnectionIfCurrent($replacement, 'wcx_other'));
-        $this->assertTrue($storage->saveConnectionIfCurrent($replacement, 'wcx_test'));
-        $this->assertFalse($storage->forgetConnectionIfCurrent('wcx_test'));
-        $this->assertTrue($storage->forgetConnectionIfCurrent('wcx_new'));
+        $this->assertFalse($storage->saveConnectionIfCurrent($replacement, 'wcx_other', null));
+        $this->assertTrue($storage->saveConnectionIfCurrent($replacement, 'wcx_test', null));
+        $this->assertFalse($storage->forgetConnectionIfCurrent('wcx_test', null));
+        $this->assertTrue($storage->forgetConnectionIfCurrent('wcx_new', null));
         $this->assertNull($storage->connection());
         $this->assertArrayNotHasKey('webilia_connect_connection_lock', WordPressTestState::$options);
     }
@@ -162,17 +162,17 @@ class WordPressMemoryStorage implements \Webilia\Connect\Contracts\Storage, \Web
 
     public function connection(): ?array { return $this->connection; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
-        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
         $this->connection = $connection;
 
         return true;
     }
     public function forgetConnection(): void { $this->connection = null; }
-    public function forgetConnectionIfCurrent(string $expectedCredential): bool
+    public function forgetConnectionIfCurrent(string $expectedCredential, ?string $expectedRevision): bool
     {
-        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
         $this->connection = null;
 
         return true;

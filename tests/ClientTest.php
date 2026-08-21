@@ -58,6 +58,19 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_a_401_update_failure_removes_the_rejected_connection(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $client = new Client(new RevokedHttpClient(), $storage);
+
+        $this->expectException(RequestException::class);
+        try {
+            $client->update('vertex-addons-pro', 'vertex/vertex.php', '1.0.0');
+        } finally {
+            $this->assertNull($storage->connection());
+        }
+    }
+
     public function test_a_401_authorization_failure_removes_the_connection_when_cache_cleanup_fails(): void
     {
         $storage = new FailingAuthorizationCleanupStorage($this->connection());
@@ -105,6 +118,19 @@ class ClientTest extends TestCase
 
         $this->expectException(TransientException::class);
         (new Client(new FailingHttpClient(), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+    }
+
+    public function test_pending_revocation_cannot_restore_a_stale_cache_generation(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new GenerationChangingRevocationStorage($connection);
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
+        $http = new SequenceHttpClient([[], new TransientException('Network unavailable')]);
+
+        $this->expectException(TransientException::class);
+        (new Client($http, $storage, 'https://api.webilia.test', 'https://example.test'))->authorize('vertex-addons-pro', 'vertex.pro.use');
     }
 
     public function test_authorization_requires_a_boolean_allowance(): void
@@ -453,6 +479,23 @@ class ClientTest extends TestCase
         $this->assertNull($storage->connection());
     }
 
+    public function test_disconnect_does_not_revoke_a_connection_replaced_during_pending_cleanup(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new InMemoryStorage($connection);
+        $http = new ReplacingDuringRevocationHttpClient($storage);
+
+        $this->expectException(RuntimeException::class);
+        try {
+            (new Client($http, $storage, 'https://api.webilia.test', 'https://example.test'))->disconnect();
+        } finally {
+            $this->assertSame('wcx_concurrent', $storage->connection()['credential']);
+            $this->assertSame(1, $http->calls());
+        }
+    }
+
     public function test_update_encodes_the_integration_path_segment(): void
     {
         $http = new RecordingHttpClient(['data' => ['allowed' => true]]);
@@ -600,17 +643,17 @@ class InMemoryStorage implements Storage, ConditionalConnectionStorage
     public function __construct(array $connection) { $this->connection = $connection; }
     public function connection(): ?array { return $this->connection; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
-        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
         $this->connection = $connection;
 
         return true;
     }
     public function forgetConnection(): void { $this->connection = null; }
-    public function forgetConnectionIfCurrent(string $expectedCredential): bool
+    public function forgetConnectionIfCurrent(string $expectedCredential, ?string $expectedRevision): bool
     {
-        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
         $this->connection = null;
 
         return true;
@@ -642,17 +685,17 @@ class ReadOnceStorage implements Storage, ConditionalConnectionStorage
 
     public function connectionReads(): int { return $this->reads; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
-        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
         $this->connection = $connection;
 
         return true;
     }
     public function forgetConnection(): void { $this->connection = null; }
-    public function forgetConnectionIfCurrent(string $expectedCredential): bool
+    public function forgetConnectionIfCurrent(string $expectedCredential, ?string $expectedRevision): bool
     {
-        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
         $this->connection = null;
 
         return true;
@@ -680,7 +723,7 @@ class FailingConnectionStorage extends InMemoryStorage
         throw new RuntimeException('Unable to persist the connection.');
     }
 
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
         throw new RuntimeException('Unable to persist the connection.');
     }
@@ -704,7 +747,7 @@ class FailingAuthorizationWriteStorage extends InMemoryStorage
 
 class ConcurrentExchangeStorage extends InMemoryStorage
 {
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
         $this->saveConnection([
             'connection_id' => 3,
@@ -719,13 +762,30 @@ class ConcurrentExchangeStorage extends InMemoryStorage
 
 class ConcurrentRevocationStorage extends InMemoryStorage
 {
-    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential): bool
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
     {
         $this->saveConnection([
             'connection_id' => 3,
             'credential' => 'wcx_concurrent',
             'site_url' => 'https://example.test',
             'status' => 'active',
+        ]);
+
+        return false;
+    }
+}
+
+class GenerationChangingRevocationStorage extends InMemoryStorage
+{
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
+    {
+        $this->saveConnection([
+            'connection_id' => 1,
+            'credential' => 'wcx_test',
+            'site_url' => 'https://example.test',
+            'status' => 'active',
+            'connection_revision' => 'newer',
+            'authorization_cache_generation' => 'new-generation',
         ]);
 
         return false;
@@ -751,5 +811,35 @@ class ReplacingDisconnectHttpClient implements HttpClient
         ]);
 
         return [];
+    }
+}
+
+class ReplacingDuringRevocationHttpClient implements HttpClient
+{
+    private InMemoryStorage $storage;
+    private int $calls = 0;
+
+    public function __construct(InMemoryStorage $storage)
+    {
+        $this->storage = $storage;
+    }
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        ++$this->calls;
+        $this->storage->saveConnection([
+            'connection_id' => 3,
+            'credential' => 'wcx_concurrent',
+            'site_url' => 'https://example.test',
+            'status' => 'active',
+            'connection_revision' => 'replacement',
+        ]);
+
+        return [];
+    }
+
+    public function calls(): int
+    {
+        return $this->calls;
     }
 }

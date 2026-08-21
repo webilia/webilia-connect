@@ -28,6 +28,9 @@ unscoped and stable.
 
 The stable contracts are under `Webilia\\Connect\\Contracts`: `Connection`,
 `Capability`, `AuthorizationResult`, `UpdateClient`, `Storage`, and `HttpClient`.
+Storage adapters that can atomically compare and replace the encrypted connection
+record should additionally implement `ConditionalConnectionStorage`; the bundled
+WordPress adapter does so to protect concurrent callbacks and disconnects.
 Pass the product's update capability to `WordPress\\UpdateClient`; when omitted,
 the adapter uses the conventional `{integration}.update` capability name.
 
