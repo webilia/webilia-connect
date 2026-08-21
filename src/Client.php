@@ -249,6 +249,14 @@ final class Client
                 && hash_equals($connection->credential(), $currentConnection->credential())
                 && (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') === '') {
                 $this->forgetConnectionIfCurrent($currentConnection);
+
+                return;
+            }
+
+            if ($currentConnection
+                && hash_equals($connection->credential(), $currentConnection->credential())
+                && (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') !== '') {
+                throw new RuntimeException('Unable to disconnect until the previous Webilia credential is revoked.');
             }
 
             return;

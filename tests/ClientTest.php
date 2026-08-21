@@ -512,6 +512,22 @@ class ClientTest extends TestCase
         $this->assertNull($storage->connection());
     }
 
+    public function test_disconnect_reports_failed_pending_revocation_for_an_inactive_connection(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $connection['status'] = 'revoked';
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new InMemoryStorage($connection);
+
+        $this->expectException(RuntimeException::class);
+        try {
+            (new Client(new FailingHttpClient(), $storage, 'https://api.webilia.test', 'https://example.test'))->disconnect();
+        } finally {
+            $this->assertSame('wcx_old', $storage->connection()['pending_revocation_credential']);
+        }
+    }
+
     public function test_disconnect_removes_a_revoked_credential_after_a_metadata_revision(): void
     {
         $connection = $this->connection();
