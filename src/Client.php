@@ -130,7 +130,15 @@ final class Client
             throw new RuntimeException('Webilia Connect returned a connection for a different website.');
         }
 
-        $this->storage->saveConnection($connection);
+        try {
+            $this->storage->saveConnection($connection);
+        } catch (\Throwable $exception) {
+            $this->revokeCredential($credential);
+            $this->forgetCompletedPending($state);
+
+            throw $exception;
+        }
+
         $this->forgetCompletedPending($state);
 
         return $completedConnection;
@@ -236,7 +244,7 @@ final class Client
     /** @param array<string, mixed> $response @return array<string, mixed> */
     private function data(array $response): array
     {
-        if (($response['success'] ?? true) === false) {
+        if (array_key_exists('success', $response) && $response['success'] !== true) {
             throw new RequestException((string) ($response['message'] ?? 'Webilia Connect request failed.'));
         }
 

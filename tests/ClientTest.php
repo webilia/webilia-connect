@@ -117,6 +117,19 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_malformed_disconnect_success_flag_keeps_the_connection(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $client = new Client(new SuccessfulHttpClient(['success' => 'false']), $storage);
+
+        $this->expectException(RequestException::class);
+        try {
+            $client->disconnect();
+        } finally {
+            $this->assertNotNull($storage->connection());
+        }
+    }
+
     public function test_is_connected_reads_the_connection_once(): void
     {
         $storage = new ReadOnceStorage($this->connection());
@@ -194,6 +207,31 @@ class ClientTest extends TestCase
         } finally {
             $this->assertSame(2, $http->calls());
             $this->assertSame(['Authorization' => 'Bearer wcx_mismatch'], $http->headers(1));
+            $this->assertNull($storage->pending('state'));
+        }
+    }
+
+    public function test_exchange_credential_is_revoked_when_persistence_fails(): void
+    {
+        $storage = new FailingConnectionStorage($this->connection());
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $http = new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active']],
+            [],
+        ]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame(2, $http->calls());
+            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(1));
             $this->assertNull($storage->pending('state'));
         }
     }
@@ -432,5 +470,13 @@ class FailingPendingCleanupStorage extends InMemoryStorage
     public function forgetPending(string $state): void
     {
         throw new RuntimeException('Pending cleanup failed.');
+    }
+}
+
+class FailingConnectionStorage extends InMemoryStorage
+{
+    public function saveConnection(array $connection): void
+    {
+        throw new RuntimeException('Unable to persist the connection.');
     }
 }

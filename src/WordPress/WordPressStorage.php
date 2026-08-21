@@ -179,7 +179,20 @@ final class WordPressStorage implements Storage
             throw new RuntimeException('Unable to create the Webilia connection encryption key.');
         }
 
-        @chmod($path, 0600);
+        clearstatcache(true, $path);
+        if (! @chmod($path, 0600)) {
+            @unlink($path);
+
+            throw new RuntimeException('Unable to secure the Webilia connection encryption key.');
+        }
+
+        clearstatcache(true, $path);
+        $permissions = @fileperms($path);
+        if (! is_int($permissions) || ($permissions & 0777) !== 0600) {
+            @unlink($path);
+
+            throw new RuntimeException('Unable to secure the Webilia connection encryption key.');
+        }
 
         return $key;
     }
@@ -195,7 +208,9 @@ final class WordPressStorage implements Storage
 
     private function storedFileKey(string $path): ?string
     {
-        if (! is_readable($path)) {
+        clearstatcache(true, $path);
+        $permissions = @fileperms($path);
+        if (! is_readable($path) || ! is_int($permissions) || ($permissions & 0777) !== 0600) {
             return null;
         }
 

@@ -14,6 +14,10 @@ material explicitly. Otherwise, the SDK creates a protected
 `.webilia-connect-key.php` file in `WP_CONTENT_DIR`; retain that file when
 migrating the site. The encryption key is never stored in `wp_options`.
 
+For a multiple-node deployment, define the same `WEBILIA_CONNECT_KEY` value on
+every node unless `WP_CONTENT_DIR` is shared. The local key-file fallback is
+only suitable for a single node or shared content storage.
+
 ## Release compatibility
 
 The Composer source namespace is `Webilia\\Connect`. WordPress product releases
