@@ -61,7 +61,7 @@ final class UpdateClient implements UpdateClientContract
 
     public function checkInfo($false, $action, $arg)
     {
-        if (($arg->slug ?? '') !== $this->slug) {
+        if ($action !== 'plugin_information' || ($arg->slug ?? '') !== $this->slug) {
             return $false;
         }
 

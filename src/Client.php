@@ -154,7 +154,7 @@ final class Client
     {
         $connection = $this->requiredConnection();
 
-        return $this->data($this->http->post($this->endpoint('/v1/connect/integrations/'.$integration.'/updates'), [
+        return $this->data($this->http->post($this->endpoint('/v1/connect/integrations/'.rawurlencode($integration).'/updates'), [
             'basename' => $basename,
             'version' => $version,
             'core_version' => $coreVersion,

@@ -134,6 +134,16 @@ class ClientTest extends TestCase
         $this->assertNull($storage->connection());
     }
 
+    public function test_update_encodes_the_integration_path_segment(): void
+    {
+        $http = new RecordingHttpClient(['data' => ['allowed' => true]]);
+        $client = new Client($http, new InMemoryStorage($this->connection()));
+
+        $client->update('foo/bar', 'plugin/plugin.php', '1.0.0');
+
+        $this->assertStringContainsString('/integrations/foo%2Fbar/updates', $http->url());
+    }
+
     private function connection(): array
     {
         return [
@@ -171,6 +181,29 @@ class RevokedHttpClient implements HttpClient
     public function post(string $url, array $payload, array $headers = []): array
     {
         throw new RequestException('Connection revoked', 401);
+    }
+}
+
+class RecordingHttpClient implements HttpClient
+{
+    private array $response;
+    private string $lastUrl = '';
+
+    public function __construct(array $response)
+    {
+        $this->response = $response;
+    }
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        $this->lastUrl = $url;
+
+        return $this->response;
+    }
+
+    public function url(): string
+    {
+        return $this->lastUrl;
     }
 }
 
