@@ -23,8 +23,10 @@ final class UpdateClient implements UpdateClientContract
         $this->basename = $basename;
         $this->coreVersion = $coreVersion;
         $this->updateCapability = $updateCapability !== '' ? $updateCapability : $integration.'.update';
-        $parts = explode('/', $basename);
-        $this->slug = str_replace('.php', '', (string) end($parts));
+        $directory = trim(dirname($basename), '.');
+        $this->slug = $directory !== ''
+            ? basename($directory)
+            : pathinfo(basename($basename), PATHINFO_FILENAME);
 
         add_filter('pre_set_site_transient_update_plugins', [$this, 'checkUpdate']);
         add_filter('plugins_api', [$this, 'checkInfo'], 10, 3);

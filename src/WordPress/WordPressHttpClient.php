@@ -28,7 +28,7 @@ final class WordPressHttpClient implements HttpClient
                 throw new TransientException('Webilia Connect returned an invalid response.');
             }
 
-            throw new RequestException('Webilia Connect returned an invalid response.');
+            throw new RequestException('Webilia Connect returned an invalid response.', $status);
         }
 
         if ($status >= 400) {
@@ -37,7 +37,7 @@ final class WordPressHttpClient implements HttpClient
                 throw new TransientException($message);
             }
 
-            throw new RequestException($message);
+            throw new RequestException($message, $status);
         }
 
         return $body;

@@ -13,12 +13,12 @@ interface Storage
     public function forgetConnection(): void;
 
     /** @return array<string, mixed>|null */
-    public function pending(): ?array;
+    public function pending(string $state): ?array;
 
     /** @param array<string, mixed> $pending */
     public function savePending(array $pending): void;
 
-    public function forgetPending(): void;
+    public function forgetPending(string $state): void;
 
     /** @return array<string, mixed>|null */
     public function authorization(string $key): ?array;

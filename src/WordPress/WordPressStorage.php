@@ -8,7 +8,7 @@ use Webilia\Connect\Contracts\Storage;
 final class WordPressStorage implements Storage
 {
     private const CONNECTION_OPTION = 'webilia_connect_connection';
-    private const PENDING_OPTION = 'webilia_connect_pending';
+    private const PENDING_PREFIX = 'webilia_connect_pending_';
     private const AUTHORIZATION_PREFIX = 'webilia_connect_authorization_';
 
     public function connection(): ?array
@@ -35,40 +35,55 @@ final class WordPressStorage implements Storage
         }
     }
 
-    public function pending(): ?array
+    public function pending(string $state): ?array
     {
-        $value = get_option(self::PENDING_OPTION, []);
+        $value = get_option($this->pendingOption($state), []);
 
-        return is_array($value) ? $value : null;
+        return is_array($value) && hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
     }
 
     public function savePending(array $pending): void
     {
-        if (! update_option(self::PENDING_OPTION, $pending, false) && get_option(self::PENDING_OPTION, null) !== $pending) {
+        $state = (string) ($pending['state'] ?? '');
+        if ($state === '') {
+            throw new RuntimeException('The pending Webilia Connect request is missing its state.');
+        }
+
+        $option = $this->pendingOption($state);
+        if (! update_option($option, $pending, false) && get_option($option, null) !== $pending) {
             throw new RuntimeException('Unable to save the pending Webilia Connect request.');
         }
     }
 
-    public function forgetPending(): void
+    public function forgetPending(string $state): void
     {
-        delete_option(self::PENDING_OPTION);
+        $option = $this->pendingOption($state);
+        if (! delete_option($option) && get_option($option, null) !== null) {
+            throw new RuntimeException('Unable to remove the pending Webilia Connect request.');
+        }
     }
 
     public function authorization(string $key): ?array
     {
-        $value = get_option(self::AUTHORIZATION_PREFIX.md5($key), []);
+        $value = get_option($this->authorizationOption($key), []);
 
         return is_array($value) ? $value : null;
     }
 
     public function saveAuthorization(string $key, array $authorization): void
     {
-        update_option(self::AUTHORIZATION_PREFIX.md5($key), $authorization, false);
+        $option = $this->authorizationOption($key);
+        if (! update_option($option, $authorization, false) && get_option($option, null) !== $authorization) {
+            throw new RuntimeException('Unable to save the cached Webilia Connect authorization.');
+        }
     }
 
     public function forgetAuthorization(string $key): void
     {
-        delete_option(self::AUTHORIZATION_PREFIX.md5($key));
+        $option = $this->authorizationOption($key);
+        if (! delete_option($option) && get_option($option, null) !== null) {
+            throw new RuntimeException('Unable to remove the cached Webilia Connect authorization.');
+        }
     }
 
     /** @param array<string, mixed> $payload */
@@ -112,5 +127,15 @@ final class WordPressStorage implements Storage
     private function key(): string
     {
         return hash('sha256', wp_salt('auth').':webilia-connect', true);
+    }
+
+    private function pendingOption(string $state): string
+    {
+        return self::PENDING_PREFIX.hash('sha256', $state);
+    }
+
+    private function authorizationOption(string $key): string
+    {
+        return self::AUTHORIZATION_PREFIX.md5($key);
     }
 }

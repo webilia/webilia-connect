@@ -20,7 +20,7 @@ class ClientTest extends TestCase
             'site_url' => 'https://example.test',
             'status' => 'active',
         ]);
-        $storage->saveAuthorization('1:vertex-addons-pro:vertex.pro.use', ['allowed' => true, 'cache_until' => time() + 60]);
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
         $client = new Client(new FailingHttpClient(), $storage);
 
         $result = $client->authorize('vertex-addons-pro', 'vertex.pro.use');
@@ -32,7 +32,7 @@ class ClientTest extends TestCase
     public function test_authorization_does_not_use_cached_allowance_for_a_permanent_failure(): void
     {
         $storage = new InMemoryStorage($this->connection());
-        $storage->saveAuthorization('1:vertex-addons-pro:vertex.pro.use', ['allowed' => true, 'cache_until' => time() + 60]);
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
         $client = new Client(new PermanentFailingHttpClient(), $storage);
 
         $this->expectException(RequestException::class);
@@ -42,7 +42,7 @@ class ClientTest extends TestCase
     public function test_authorization_does_not_reuse_a_previous_connections_cache(): void
     {
         $storage = new InMemoryStorage($this->connection());
-        $storage->saveAuthorization('1:vertex-addons-pro:vertex.pro.use', ['allowed' => true, 'cache_until' => time() + 60]);
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
         $newConnection = $this->connection();
         $newConnection['connection_id'] = 2;
         $storage->saveConnection($newConnection);
@@ -59,7 +59,7 @@ class ClientTest extends TestCase
 
         $client->authorize('vertex-addons-pro', 'vertex.pro.use');
 
-        $cached = $storage->authorization('1:vertex-addons-pro:vertex.pro.use');
+        $cached = $storage->authorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'));
         $this->assertNotNull($cached);
         $this->assertLessThanOrEqual(time() + 30, $cached['cache_until']);
     }
@@ -74,7 +74,7 @@ class ClientTest extends TestCase
             $client->complete('code', 'wrong');
             $this->fail('Expected an invalid state exception.');
         } catch (RuntimeException $exception) {
-            $this->assertNotNull($storage->pending());
+            $this->assertNotNull($storage->pending('expected'));
         }
     }
 
@@ -100,6 +100,40 @@ class ClientTest extends TestCase
         $this->assertSame(1, $storage->connectionReads());
     }
 
+    public function test_authorization_cache_keys_do_not_collide(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $online = new Client(new SuccessfulHttpClient(['data' => ['allowed' => true, 'cache_for_seconds' => 60]]), $storage);
+        $online->authorize('a:b', 'c');
+        $offline = new Client(new FailingHttpClient(), $storage);
+
+        $this->expectException(TransientException::class);
+        $offline->authorize('a', 'b:c');
+    }
+
+    public function test_pending_requests_are_preserved_by_state(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $first = ['state' => 'first', 'verifier' => 'first-verifier', 'expires_at' => time() + 60];
+        $second = ['state' => 'second', 'verifier' => 'second-verifier', 'expires_at' => time() + 60];
+
+        $storage->savePending($first);
+        $storage->savePending($second);
+
+        $this->assertSame($first, $storage->pending('first'));
+        $this->assertSame($second, $storage->pending('second'));
+    }
+
+    public function test_disconnect_cleans_up_an_already_revoked_credential(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $client = new Client(new RevokedHttpClient(), $storage);
+
+        $client->disconnect();
+
+        $this->assertNull($storage->connection());
+    }
+
     private function connection(): array
     {
         return [
@@ -108,6 +142,11 @@ class ClientTest extends TestCase
             'site_url' => 'https://example.test',
             'status' => 'active',
         ];
+    }
+
+    private function authorizationKey(string $integration, string $capability): string
+    {
+        return '1:'.hash('sha256', serialize([$integration, $capability]));
     }
 }
 
@@ -124,6 +163,14 @@ class PermanentFailingHttpClient implements HttpClient
     public function post(string $url, array $payload, array $headers = []): array
     {
         throw new RequestException('Connection revoked');
+    }
+}
+
+class RevokedHttpClient implements HttpClient
+{
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        throw new RequestException('Connection revoked', 401);
     }
 }
 
@@ -145,16 +192,16 @@ class SuccessfulHttpClient implements HttpClient
 class InMemoryStorage implements Storage
 {
     private ?array $connection;
-    private ?array $pending = null;
+    private array $pending = [];
     private array $authorizations = [];
 
     public function __construct(array $connection) { $this->connection = $connection; }
     public function connection(): ?array { return $this->connection; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
     public function forgetConnection(): void { $this->connection = null; }
-    public function pending(): ?array { return $this->pending; }
-    public function savePending(array $pending): void { $this->pending = $pending; }
-    public function forgetPending(): void { $this->pending = null; }
+    public function pending(string $state): ?array { return $this->pending[$state] ?? null; }
+    public function savePending(array $pending): void { $this->pending[(string) $pending['state']] = $pending; }
+    public function forgetPending(string $state): void { unset($this->pending[$state]); }
     public function authorization(string $key): ?array { return $this->authorizations[$key] ?? null; }
     public function saveAuthorization(string $key, array $authorization): void { $this->authorizations[$key] = $authorization; }
     public function forgetAuthorization(string $key): void { unset($this->authorizations[$key]); }
@@ -180,9 +227,9 @@ class ReadOnceStorage implements Storage
     public function connectionReads(): int { return $this->reads; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
     public function forgetConnection(): void { $this->connection = null; }
-    public function pending(): ?array { return null; }
+    public function pending(string $state): ?array { return null; }
     public function savePending(array $pending): void {}
-    public function forgetPending(): void {}
+    public function forgetPending(string $state): void {}
     public function authorization(string $key): ?array { return null; }
     public function saveAuthorization(string $key, array $authorization): void {}
     public function forgetAuthorization(string $key): void {}

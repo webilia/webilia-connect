@@ -5,6 +5,7 @@ namespace Webilia\Connect;
 use RuntimeException;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
+use Webilia\Connect\Exception\RequestException;
 use Webilia\Connect\Exception\TransientException;
 
 final class Client
@@ -76,10 +77,12 @@ final class Client
 
     public function complete(string $code, string $state): Connection
     {
-        $pending = $this->storage->pending();
+        $pending = $this->storage->pending($state);
 
         if (! $pending || (int) ($pending['expires_at'] ?? 0) < time()) {
-            $this->storage->forgetPending();
+            if ($pending) {
+                $this->storage->forgetPending($state);
+            }
 
             throw new RuntimeException('Your Webilia Connect request has expired. Please try again.');
         }
@@ -108,7 +111,7 @@ final class Client
         ];
 
         $this->storage->saveConnection($connection);
-        $this->storage->forgetPending();
+        $this->storage->forgetPending($state);
 
         return new Connection($connection);
     }
@@ -161,7 +164,14 @@ final class Client
     public function disconnect(): void
     {
         $connection = $this->requiredConnection();
-        $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection)));
+        try {
+            $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection)));
+        } catch (RequestException $exception) {
+            if ($exception->getCode() !== 401) {
+                throw $exception;
+            }
+        }
+
         $this->storage->forgetConnection();
     }
 
@@ -208,7 +218,7 @@ final class Client
         $connectionId = $connection->id();
 
         return $connectionId !== null && $connectionId > 0
-            ? $connectionId.':'.$integration.':'.$capability
+            ? $connectionId.':'.hash('sha256', serialize([$integration, $capability]))
             : null;
     }
 
