@@ -1,0 +1,27 @@
+{
+  "name": "webilia/connect",
+  "description": "Webilia Connect SDK for WordPress products.",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=7.4"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^9.6"
+  },
+  "autoload": {
+    "psr-4": {
+      "Webilia\\Connect\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Webilia\\Connect\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
