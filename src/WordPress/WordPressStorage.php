@@ -15,6 +15,9 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
     private const PENDING_LOCK_OPTION = 'webilia_connect_pending_requests_lock';
     private const AUTHORIZATION_PREFIX = 'webilia_connect_authorization_';
 
+    /** @var array<string, int> */
+    private array $heldLocks = [];
+
     public function connection(): ?array
     {
         $value = get_option(self::CONNECTION_OPTION, '');
@@ -37,8 +40,23 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
             return null;
         }
 
-        if (! update_option(self::CONNECTION_OPTION, $this->encrypt($connection), false)) {
-            throw new RuntimeException('Unable to migrate the Webilia connection credential.');
+        $migrate = function () use ($value, $connection): bool {
+            if (get_option(self::CONNECTION_OPTION, '') !== $value) {
+                return false;
+            }
+
+            if (! update_option(self::CONNECTION_OPTION, $this->encrypt($connection), false)) {
+                throw new RuntimeException('Unable to migrate the Webilia connection credential.');
+            }
+
+            return true;
+        };
+        $migrated = ($this->heldLocks[self::CONNECTION_LOCK_OPTION] ?? 0) > 0
+            ? $migrate()
+            : $this->withLock(self::CONNECTION_LOCK_OPTION, $migrate);
+
+        if (! $migrated) {
+            return $this->connection();
         }
 
         return $connection;
@@ -81,6 +99,20 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
             if (! is_array($current)
                 || ! hash_equals((string) ($current['credential'] ?? ''), $expectedCredential)
                 || (isset($current['connection_revision']) ? (string) $current['connection_revision'] : null) !== $expectedRevision) {
+                return false;
+            }
+
+            $this->forgetConnection();
+
+            return true;
+        });
+    }
+
+    public function forgetConnectionWithCredential(string $expectedCredential): bool
+    {
+        return $this->withLock(self::CONNECTION_LOCK_OPTION, function () use ($expectedCredential): bool {
+            $current = $this->connection();
+            if (! is_array($current) || ! hash_equals((string) ($current['credential'] ?? ''), $expectedCredential)) {
                 return false;
             }
 
@@ -206,7 +238,7 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         }
 
         $path = $this->keyPath();
-        $stored = $this->storedFileKey($path);
+        $stored = $this->existingKey($path);
         if ($stored !== null) {
             return $stored;
         }
@@ -238,7 +270,7 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
 
         if (! @link($temporaryPath, $path)) {
             @unlink($temporaryPath);
-            $stored = $this->storedFileKey($path);
+            $stored = $this->existingKey($path);
             if ($stored !== null) {
                 return $stored;
             }
@@ -272,6 +304,23 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         return is_string($key) && strlen($key) === 32 ? $key : null;
     }
 
+    private function existingKey(string $path): ?string
+    {
+        $stored = $this->storedFileKey($path);
+        if ($stored !== null || ! file_exists($path)) {
+            return $stored;
+        }
+
+        if (@chmod($path, 0600)) {
+            $stored = $this->storedFileKey($path);
+            if ($stored !== null) {
+                return $stored;
+            }
+        }
+
+        throw new RuntimeException('The existing Webilia connection encryption key cannot be read securely.');
+    }
+
     private function createKeyFileWithoutHardLink(string $path, string $contents, string $key): string
     {
         $lockPath = $path.'.lock';
@@ -287,7 +336,7 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         }
 
         try {
-            $stored = $this->storedFileKey($path);
+            $stored = $this->existingKey($path);
             if ($stored !== null) {
                 return $stored;
             }
@@ -334,7 +383,7 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
             return null;
         }
 
-        return $this->storedFileKey($this->keyPath());
+        return $this->existingKey($this->keyPath());
     }
 
     /** @return array<string, array<string, mixed>> */
@@ -387,9 +436,14 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
         do {
             $lock = ['token' => $token, 'expires_at' => time() + 30];
             if (add_option($option, $lock, '', false)) {
+                $this->heldLocks[$option] = ($this->heldLocks[$option] ?? 0) + 1;
                 try {
                     return $callback();
                 } finally {
+                    --$this->heldLocks[$option];
+                    if ($this->heldLocks[$option] === 0) {
+                        unset($this->heldLocks[$option]);
+                    }
                     $this->deleteLockIfCurrent($option, $lock);
                 }
             }

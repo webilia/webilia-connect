@@ -177,6 +177,13 @@ class WordPressMemoryStorage implements \Webilia\Connect\Contracts\Storage, \Web
 
         return true;
     }
+    public function forgetConnectionWithCredential(string $expectedCredential): bool
+    {
+        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        $this->connection = null;
+
+        return true;
+    }
     public function pending(string $state): ?array { return null; }
     public function savePending(array $pending): void {}
     public function forgetPending(string $state): void {}

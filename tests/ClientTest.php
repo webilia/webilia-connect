@@ -84,6 +84,26 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_a_401_authorization_failure_retains_pending_revocation_cleanup(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new InMemoryStorage($connection);
+
+        $this->expectException(RequestException::class);
+        try {
+            (new Client(new SequenceHttpClient([
+                new TransientException('Network unavailable'),
+                new RequestException('Connection revoked', 401),
+            ]), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+        } finally {
+            $saved = $storage->connection();
+            $this->assertSame('revoked', $saved['status']);
+            $this->assertSame('wcx_old', $saved['pending_revocation_credential']);
+        }
+    }
+
     public function test_a_fresh_authorization_succeeds_when_cache_writing_fails(): void
     {
         $storage = new FailingAuthorizationWriteStorage($this->connection());
@@ -479,6 +499,30 @@ class ClientTest extends TestCase
         $this->assertNull($storage->connection());
     }
 
+    public function test_disconnect_retries_pending_revocation_before_removing_an_inactive_connection(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $connection['status'] = 'revoked';
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new InMemoryStorage($connection);
+
+        (new Client(new SequenceHttpClient([[]]), $storage, 'https://api.webilia.test', 'https://example.test'))->disconnect();
+
+        $this->assertNull($storage->connection());
+    }
+
+    public function test_disconnect_removes_a_revoked_credential_after_a_metadata_revision(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $storage = new InMemoryStorage($connection);
+
+        (new Client(new MetadataChangingDisconnectHttpClient($storage), $storage, 'https://api.webilia.test', 'https://example.test'))->disconnect();
+
+        $this->assertNull($storage->connection());
+    }
+
     public function test_disconnect_does_not_revoke_a_connection_replaced_during_pending_cleanup(): void
     {
         $connection = $this->connection();
@@ -658,6 +702,13 @@ class InMemoryStorage implements Storage, ConditionalConnectionStorage
 
         return true;
     }
+    public function forgetConnectionWithCredential(string $expectedCredential): bool
+    {
+        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
+        $this->connection = null;
+
+        return true;
+    }
     public function pending(string $state): ?array { return $this->pending[$state] ?? null; }
     public function savePending(array $pending): void { $this->pending[(string) $pending['state']] = $pending; }
     public function forgetPending(string $state): void { unset($this->pending[$state]); }
@@ -696,6 +747,13 @@ class ReadOnceStorage implements Storage, ConditionalConnectionStorage
     public function forgetConnectionIfCurrent(string $expectedCredential, ?string $expectedRevision): bool
     {
         if (($this->connection['credential'] ?? null) !== $expectedCredential || ($this->connection['connection_revision'] ?? null) !== $expectedRevision) { return false; }
+        $this->connection = null;
+
+        return true;
+    }
+    public function forgetConnectionWithCredential(string $expectedCredential): bool
+    {
+        if (($this->connection['credential'] ?? null) !== $expectedCredential) { return false; }
         $this->connection = null;
 
         return true;
@@ -841,5 +899,25 @@ class ReplacingDuringRevocationHttpClient implements HttpClient
     public function calls(): int
     {
         return $this->calls;
+    }
+}
+
+class MetadataChangingDisconnectHttpClient implements HttpClient
+{
+    private InMemoryStorage $storage;
+
+    public function __construct(InMemoryStorage $storage)
+    {
+        $this->storage = $storage;
+    }
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        $connection = $this->storage->connection();
+        $connection['connection_revision'] = 'metadata-change';
+        $connection['authorization_cache_generation'] = 'new-generation';
+        $this->storage->saveConnection($connection);
+
+        return [];
     }
 }

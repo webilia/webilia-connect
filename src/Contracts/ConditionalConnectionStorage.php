@@ -21,4 +21,7 @@ interface ConditionalConnectionStorage
 
     /** Removes a connection only when its credential and revision match. */
     public function forgetConnectionIfCurrent(string $expectedCredential, ?string $expectedRevision): bool;
+
+    /** Removes a connection only when its credential matches, regardless of metadata revisions. */
+    public function forgetConnectionWithCredential(string $expectedCredential): bool;
 }

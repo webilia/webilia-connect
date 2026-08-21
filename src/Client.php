@@ -236,8 +236,20 @@ final class Client
             throw new RuntimeException('This website is not connected to Webilia.');
         }
 
-        if (! $connection->active() || ! $this->belongsToCurrentSite($connection)) {
+        if (! $this->belongsToCurrentSite($connection)) {
             $this->forgetConnectionIfCurrent($connection);
+
+            return;
+        }
+
+        if (! $connection->active()) {
+            $this->retryPendingRevocation($connection);
+            $currentConnection = $this->connection();
+            if ($currentConnection
+                && hash_equals($connection->credential(), $currentConnection->credential())
+                && (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') === '') {
+                $this->forgetConnectionIfCurrent($currentConnection);
+            }
 
             return;
         }
@@ -260,7 +272,7 @@ final class Client
             }
         }
 
-        $this->forgetConnectionIfCurrent($connection);
+        $this->forgetConnectionWithCredential($connection->credential());
     }
 
     private function requiredConnection(): Connection
@@ -333,6 +345,15 @@ final class Client
     private function forgetRejectedConnection(Connection $rejected): void
     {
         try {
+            $payload = $rejected->payload();
+            if ((string) ($payload['pending_revocation_credential'] ?? '') !== '') {
+                $payload['status'] = 'revoked';
+                $payload['connection_revision'] = $this->randomToken();
+                $this->saveConnectionIfCurrent($payload, $rejected);
+
+                return;
+            }
+
             $this->forgetConnectionIfCurrent($rejected);
         } catch (\Throwable $exception) {
             // Preserve the authorization error when local cleanup cannot be completed.
@@ -421,6 +442,22 @@ final class Client
 
         $current = $this->connection();
         if (! $current || ! hash_equals($current->credential(), $expectedCredential) || $this->connectionRevision($current) !== $expectedRevision) {
+            return false;
+        }
+
+        $this->storage->forgetConnection();
+
+        return true;
+    }
+
+    private function forgetConnectionWithCredential(string $expectedCredential): bool
+    {
+        if ($this->storage instanceof ConditionalConnectionStorage) {
+            return $this->storage->forgetConnectionWithCredential($expectedCredential);
+        }
+
+        $current = $this->connection();
+        if (! $current || ! hash_equals($current->credential(), $expectedCredential)) {
             return false;
         }
 
