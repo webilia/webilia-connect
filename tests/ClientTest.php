@@ -158,6 +158,17 @@ class ClientTest extends TestCase
         (new Client(new FailingHttpClient(), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
     }
 
+    public function test_denial_retries_cache_invalidation_after_a_metadata_revision_race(): void
+    {
+        $connection = $this->connection();
+        $connection['connection_revision'] = 'original';
+        $storage = new RevisionChangingInvalidationStorage($connection);
+        $client = new Client(new SuccessfulHttpClient(['data' => ['allowed' => false]]), $storage);
+
+        $this->assertFalse($client->authorize('vertex-addons-pro', 'vertex.pro.use')->allowed());
+        $this->assertNotEmpty($storage->connection()['authorization_cache_generation']);
+    }
+
     public function test_pending_revocation_cannot_restore_a_stale_cache_generation(): void
     {
         $connection = $this->connection();
@@ -345,6 +356,28 @@ class ClientTest extends TestCase
             $this->assertSame(2, $http->calls());
             $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(1));
             $this->assertNull($storage->pending('state'));
+        }
+    }
+
+    public function test_exchange_credential_is_queued_when_persistence_and_revocation_fail(): void
+    {
+        $storage = new FailsFirstConnectionSaveStorage($this->connection());
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $client = new Client(new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active']],
+            new TransientException('Network unavailable'),
+        ]), $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame('wcx_new', $storage->connection()['pending_revocation_credential']);
         }
     }
 
@@ -899,6 +932,41 @@ class RacingRejectionStorage extends InMemoryStorage
                 'status' => 'active',
                 'connection_revision' => 'newer',
             ]);
+
+            return false;
+        }
+
+        return parent::saveConnectionIfCurrent($connection, $expectedCredential, $expectedRevision);
+    }
+}
+
+class RevisionChangingInvalidationStorage extends FailingAuthorizationCleanupStorage
+{
+    private bool $raced = false;
+
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
+    {
+        if (! $this->raced) {
+            $this->raced = true;
+            $current = $this->connection();
+            $current['connection_revision'] = 'newer';
+            $this->saveConnection($current);
+
+            return false;
+        }
+
+        return parent::saveConnectionIfCurrent($connection, $expectedCredential, $expectedRevision);
+    }
+}
+
+class FailsFirstConnectionSaveStorage extends InMemoryStorage
+{
+    private bool $failed = false;
+
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
+    {
+        if (! $this->failed) {
+            $this->failed = true;
 
             return false;
         }

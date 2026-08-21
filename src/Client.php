@@ -108,7 +108,7 @@ final class Client
         if ($previousConnection) {
             $this->retryPendingRevocation($previousConnection);
             $previousConnection = $this->connection();
-            if ($previousConnection && (string) ($previousConnection->payload()['pending_revocation_credential'] ?? '') !== '') {
+            if ($previousConnection && $this->hasPendingRevocations($previousConnection)) {
                 throw new RuntimeException('Unable to replace the existing Webilia connection until its previous credential is revoked.');
             }
         }
@@ -151,7 +151,9 @@ final class Client
                 throw new RuntimeException('The Webilia Connect connection changed while this request was completing.');
             }
         } catch (\Throwable $exception) {
-            $this->revokeCredential($credential);
+            if (! $this->revokeCredential($credential)) {
+                $this->queuePendingRevocation($credential);
+            }
             $this->forgetCompletedPending($state);
 
             throw $exception;
@@ -247,7 +249,7 @@ final class Client
             $currentConnection = $this->connection();
             if ($currentConnection
                 && hash_equals($connection->credential(), $currentConnection->credential())
-                && (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') === '') {
+                && ! $this->hasPendingRevocations($currentConnection)) {
                 $this->forgetConnectionIfCurrent($currentConnection);
 
                 return;
@@ -255,7 +257,7 @@ final class Client
 
             if ($currentConnection
                 && hash_equals($connection->credential(), $currentConnection->credential())
-                && (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') !== '') {
+                && $this->hasPendingRevocations($currentConnection)) {
                 throw new RuntimeException('Unable to disconnect until the previous Webilia credential is revoked.');
             }
 
@@ -266,7 +268,7 @@ final class Client
         $currentConnection = $this->connection();
         if (! $currentConnection
             || ! hash_equals($connection->credential(), $currentConnection->credential())
-            || (string) ($currentConnection->payload()['pending_revocation_credential'] ?? '') !== '') {
+            || $this->hasPendingRevocations($currentConnection)) {
             throw new RuntimeException('Unable to disconnect until the previous Webilia credential is revoked.');
         }
 
@@ -356,7 +358,7 @@ final class Client
             $current = $rejected;
             for ($attempt = 0; $attempt < 2; ++$attempt) {
                 $payload = $current->payload();
-                if ((string) ($payload['pending_revocation_credential'] ?? '') !== '') {
+                if ($this->pendingRevocationCredentials($payload) !== []) {
                     $payload['status'] = 'revoked';
                     $payload['connection_revision'] = $this->randomToken();
                     if ($this->saveConnectionIfCurrent($payload, $current)) {
@@ -379,12 +381,23 @@ final class Client
     private function retryPendingRevocation(Connection $connection): void
     {
         $payload = $connection->payload();
-        $credential = (string) ($payload['pending_revocation_credential'] ?? '');
-        if ($credential === '' || ! $this->revokeCredential($credential)) {
+        $credentials = $this->pendingRevocationCredentials($payload);
+        if ($credentials === []) {
             return;
         }
 
-        unset($payload['pending_revocation_credential']);
+        $remaining = [];
+        foreach ($credentials as $credential) {
+            if (! $this->revokeCredential($credential)) {
+                $remaining[] = $credential;
+            }
+        }
+
+        if ($remaining === $credentials) {
+            return;
+        }
+
+        $this->setPendingRevocationCredentials($payload, $remaining);
         $payload['connection_revision'] = $this->randomToken();
         try {
             $this->saveConnectionIfCurrent($payload, $connection);
@@ -400,20 +413,32 @@ final class Client
 
             return;
         } catch (\Throwable $exception) {
-            $payload = $connection->payload();
-            $payload['authorization_cache_generation'] = $this->randomToken();
-            $payload['connection_revision'] = $this->randomToken();
-
-            try {
-                if ($this->saveConnectionIfCurrent($payload, $connection)) {
+            $current = $connection;
+            $generation = (string) ($connection->payload()['authorization_cache_generation'] ?? '');
+            for ($attempt = 0; $attempt < 2; ++$attempt) {
+                $payload = $current->payload();
+                if ((string) ($payload['authorization_cache_generation'] ?? '') !== $generation) {
                     return;
                 }
-            } catch (\Throwable $exception) {
-                // Fall through and fail closed by clearing this exact connection when possible.
+
+                $payload['authorization_cache_generation'] = $this->randomToken();
+                $payload['connection_revision'] = $this->randomToken();
+                try {
+                    if ($this->saveConnectionIfCurrent($payload, $current)) {
+                        return;
+                    }
+                } catch (\Throwable $exception) {
+                    break;
+                }
+
+                $current = $this->connection();
+                if (! $current || ! hash_equals($current->credential(), $connection->credential())) {
+                    return;
+                }
             }
 
             try {
-                $this->forgetConnectionIfCurrent($connection);
+                $this->forgetConnectionIfCurrent($current);
             } catch (\Throwable $exception) {
                 // A broken local storage backend cannot guarantee cache invalidation.
             }
@@ -489,6 +514,74 @@ final class Client
         }
 
         return (string) $connection->payload()['connection_revision'];
+    }
+
+    private function hasPendingRevocations(Connection $connection): bool
+    {
+        return $this->pendingRevocationCredentials($connection->payload()) !== [];
+    }
+
+    /** @param array<string, mixed> $payload @return string[] */
+    private function pendingRevocationCredentials(array $payload): array
+    {
+        $credentials = [];
+        $legacyCredential = (string) ($payload['pending_revocation_credential'] ?? '');
+        if ($legacyCredential !== '') {
+            $credentials[] = $legacyCredential;
+        }
+
+        $queued = $payload['pending_revocation_credentials'] ?? [];
+        if (is_array($queued)) {
+            foreach ($queued as $credential) {
+                if (is_string($credential) && $credential !== '') {
+                    $credentials[] = $credential;
+                }
+            }
+        }
+
+        return array_values(array_unique($credentials));
+    }
+
+    /** @param array<string, mixed> $payload @param string[] $credentials */
+    private function setPendingRevocationCredentials(array &$payload, array $credentials): void
+    {
+        unset($payload['pending_revocation_credential'], $payload['pending_revocation_credentials']);
+        if (count($credentials) === 1) {
+            $payload['pending_revocation_credential'] = $credentials[0];
+
+            return;
+        }
+
+        if ($credentials !== []) {
+            $payload['pending_revocation_credentials'] = array_values(array_unique($credentials));
+        }
+    }
+
+    private function queuePendingRevocation(string $credential): void
+    {
+        for ($attempt = 0; $attempt < 2; ++$attempt) {
+            $connection = $this->connection();
+            if (! $connection || ! $this->belongsToCurrentSite($connection)) {
+                return;
+            }
+
+            $payload = $connection->payload();
+            $credentials = $this->pendingRevocationCredentials($payload);
+            if (in_array($credential, $credentials, true)) {
+                return;
+            }
+
+            $credentials[] = $credential;
+            $this->setPendingRevocationCredentials($payload, $credentials);
+            $payload['connection_revision'] = $this->randomToken();
+            try {
+                if ($this->saveConnectionIfCurrent($payload, $connection)) {
+                    return;
+                }
+            } catch (\Throwable $exception) {
+                return;
+            }
+        }
     }
 
     private function belongsToCurrentSite(Connection $connection): bool
