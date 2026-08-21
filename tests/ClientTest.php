@@ -44,6 +44,19 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_a_401_authorization_failure_removes_the_rejected_connection(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $client = new Client(new RevokedHttpClient(), $storage);
+
+        $this->expectException(RequestException::class);
+        try {
+            $client->authorize('vertex-addons-pro', 'vertex.pro.use');
+        } finally {
+            $this->assertNull($storage->connection());
+        }
+    }
+
     public function test_authorization_evicts_a_cached_allowance_for_an_application_failure(): void
     {
         $storage = new InMemoryStorage($this->connection());
@@ -230,8 +243,9 @@ class ClientTest extends TestCase
         try {
             $client->complete('code', 'state');
         } finally {
-            $this->assertSame(2, $http->calls());
-            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(1));
+            $this->assertSame(3, $http->calls());
+            $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
+            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(2));
             $this->assertNull($storage->pending('state'));
         }
     }
@@ -256,6 +270,59 @@ class ClientTest extends TestCase
         $this->assertSame(2, $http->calls());
         $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
         $this->assertSame('wcx_new', $storage->connection()['credential']);
+    }
+
+    public function test_failed_replacement_keeps_the_previous_connection(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $http = new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active']],
+            new TransientException('Unable to revoke the previous credential.'),
+            [],
+        ]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame(3, $http->calls());
+            $this->assertSame(['Authorization' => 'Bearer wcx_test'], $http->headers(1));
+            $this->assertSame(['Authorization' => 'Bearer wcx_new'], $http->headers(2));
+            $this->assertSame('wcx_test', $storage->connection()['credential']);
+        }
+    }
+
+    public function test_default_site_ports_match_the_same_site(): void
+    {
+        $client = new Client(
+            new SuccessfulHttpClient([]),
+            new InMemoryStorage($this->connection()),
+            'https://api.webilia.test',
+            'https://example.test:443'
+        );
+
+        $this->assertTrue($client->isConnected());
+    }
+
+    public function test_inactive_connections_can_be_disconnected_locally(): void
+    {
+        $connection = $this->connection();
+        $connection['status'] = 'revoked';
+        $storage = new InMemoryStorage($connection);
+        $http = new CountingHttpClient();
+        $client = new Client($http, $storage);
+
+        $client->disconnect();
+
+        $this->assertNull($storage->connection());
+        $this->assertSame(0, $http->calls());
     }
 
     public function test_authorization_cache_keys_do_not_collide(): void
@@ -427,7 +494,12 @@ class SequenceHttpClient implements HttpClient
     {
         $this->headers[] = $headers;
 
-        return array_shift($this->responses) ?? [];
+        $response = array_shift($this->responses) ?? [];
+        if ($response instanceof \Throwable) {
+            throw $response;
+        }
+
+        return $response;
     }
 
     public function calls(): int

@@ -131,6 +131,15 @@ final class Client
             throw new RuntimeException('Webilia Connect returned a connection for a different website.');
         }
 
+        if ($previousConnection && $previousConnection->active() && $this->belongsToCurrentSite($previousConnection) && $previousConnection->credential() !== $credential) {
+            if (! $this->revokeCredential($previousConnection->credential())) {
+                $this->revokeCredential($credential);
+                $this->forgetCompletedPending($state);
+
+                throw new RuntimeException('Unable to replace the existing Webilia connection. Please try again.');
+            }
+        }
+
         try {
             $this->storage->saveConnection($connection);
         } catch (\Throwable $exception) {
@@ -141,9 +150,6 @@ final class Client
         }
 
         $this->forgetCompletedPending($state);
-        if ($previousConnection && $previousConnection->active() && $this->belongsToCurrentSite($previousConnection) && $previousConnection->credential() !== $credential) {
-            $this->revokeCredential($previousConnection->credential());
-        }
 
         return $completedConnection;
     }
@@ -173,6 +179,9 @@ final class Client
             if ($cacheKey !== null) {
                 $this->storage->forgetAuthorization($cacheKey);
             }
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
 
             throw $exception;
         } catch (TransientException $exception) {
@@ -201,8 +210,12 @@ final class Client
 
     public function disconnect(): void
     {
-        $connection = $this->activeConnection();
-        if (! $this->belongsToCurrentSite($connection)) {
+        $connection = $this->connection();
+        if (! $connection) {
+            throw new RuntimeException('This website is not connected to Webilia.');
+        }
+
+        if (! $connection->active() || ! $this->belongsToCurrentSite($connection)) {
             $this->storage->forgetConnection();
 
             return;
@@ -267,14 +280,30 @@ final class Client
         return rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
     }
 
-    private function revokeCredential(string $credential): void
+    private function revokeCredential(string $credential): bool
     {
         try {
             $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], [
                 'Authorization' => 'Bearer '.$credential,
             ]));
+
+            return true;
         } catch (\Throwable $exception) {
-            // Preserve the site-mismatch error even when its best-effort remote cleanup fails.
+            // Callers decide whether a failed best-effort cleanup may be ignored.
+
+            return false;
+        }
+    }
+
+    private function forgetRejectedConnection(Connection $rejected): void
+    {
+        try {
+            $current = $this->connection();
+            if ($current && hash_equals($current->credential(), $rejected->credential())) {
+                $this->storage->forgetConnection();
+            }
+        } catch (\Throwable $exception) {
+            // Preserve the authorization error when local cleanup cannot be completed.
         }
     }
 
@@ -309,8 +338,10 @@ final class Client
             return rtrim($siteUrl, '/');
         }
 
-        $normalized = strtolower((string) $parts['scheme']).'://'.strtolower((string) $parts['host']);
-        if (isset($parts['port'])) {
+        $scheme = strtolower((string) $parts['scheme']);
+        $normalized = $scheme.'://'.strtolower((string) $parts['host']);
+        $port = isset($parts['port']) ? (int) $parts['port'] : null;
+        if ($port !== null && ! (($scheme === 'http' && $port === 80) || ($scheme === 'https' && $port === 443))) {
             $normalized .= ':'.$parts['port'];
         }
 
