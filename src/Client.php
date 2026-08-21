@@ -5,6 +5,7 @@ namespace Webilia\Connect;
 use RuntimeException;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
+use Webilia\Connect\Exception\TransientException;
 
 final class Client
 {
@@ -74,9 +75,10 @@ final class Client
     public function complete(string $code, string $state): Connection
     {
         $pending = $this->storage->pending();
-        $this->storage->forgetPending();
 
         if (! $pending || (int) ($pending['expires_at'] ?? 0) < time()) {
+            $this->storage->forgetPending();
+
             throw new RuntimeException('Your Webilia Connect request has expired. Please try again.');
         }
 
@@ -104,14 +106,15 @@ final class Client
         ];
 
         $this->storage->saveConnection($connection);
+        $this->storage->forgetPending();
 
         return new Connection($connection);
     }
 
     public function authorize(string $integration, string $capability): AuthorizationResult
     {
-        $cacheKey = $integration.':'.$capability;
         $connection = $this->requiredConnection();
+        $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
         try {
             $response = $this->http->post($this->endpoint('/v1/connect/authorizations'), [
@@ -123,16 +126,14 @@ final class Client
             $result = new AuthorizationResult($data);
 
             if ($result->allowed()) {
-                $payload = $result->payload();
-                $payload['cache_until'] = time() + self::CACHE_SECONDS;
-                $this->storage->saveAuthorization($cacheKey, $payload);
-            } else {
+                $this->cacheAuthorization($cacheKey, $result);
+            } elseif ($cacheKey !== null) {
                 $this->storage->forgetAuthorization($cacheKey);
             }
 
             return $result;
-        } catch (RuntimeException $exception) {
-            $cached = $this->storage->authorization($cacheKey);
+        } catch (TransientException $exception) {
+            $cached = $cacheKey === null ? null : $this->storage->authorization($cacheKey);
             if ($cached && (int) ($cached['cache_until'] ?? 0) >= time()) {
                 $cached['cached'] = true;
 
@@ -158,7 +159,7 @@ final class Client
     public function disconnect(): void
     {
         $connection = $this->requiredConnection();
-        $this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection));
+        $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection)));
         $this->storage->forgetConnection();
     }
 
@@ -198,5 +199,38 @@ final class Client
     private function randomToken(): string
     {
         return rtrim(strtr(base64_encode(random_bytes(48)), '+/', '-_'), '=');
+    }
+
+    private function cacheKey(string $integration, string $capability, Connection $connection): ?string
+    {
+        $connectionId = $connection->id();
+
+        return $connectionId !== null && $connectionId > 0
+            ? $connectionId.':'.$integration.':'.$capability
+            : null;
+    }
+
+    private function cacheAuthorization(?string $cacheKey, AuthorizationResult $result): void
+    {
+        if ($cacheKey === null) {
+            return;
+        }
+
+        $now = time();
+        $payload = $result->payload();
+        $cacheUntil = $result->cacheUntil();
+        if ($cacheUntil === null && is_numeric($payload['cache_for_seconds'] ?? null)) {
+            $cacheUntil = $now + max(0, (int) $payload['cache_for_seconds']);
+        }
+
+        $cacheUntil = min($cacheUntil ?? ($now + self::CACHE_SECONDS), $now + self::CACHE_SECONDS);
+        if ($cacheUntil <= $now) {
+            $this->storage->forgetAuthorization($cacheKey);
+
+            return;
+        }
+
+        $payload['cache_until'] = $cacheUntil;
+        $this->storage->saveAuthorization($cacheKey, $payload);
     }
 }

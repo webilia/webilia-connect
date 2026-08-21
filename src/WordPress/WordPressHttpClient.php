@@ -2,8 +2,9 @@
 
 namespace Webilia\Connect\WordPress;
 
-use RuntimeException;
 use Webilia\Connect\Contracts\HttpClient;
+use Webilia\Connect\Exception\RequestException;
+use Webilia\Connect\Exception\TransientException;
 
 final class WordPressHttpClient implements HttpClient
 {
@@ -17,18 +18,33 @@ final class WordPressHttpClient implements HttpClient
         ]);
 
         if (is_wp_error($response)) {
-            throw new RuntimeException($response->get_error_message());
+            throw new TransientException($response->get_error_message());
         }
 
+        $status = (int) wp_remote_retrieve_response_code($response);
         $body = json_decode((string) wp_remote_retrieve_body($response), true);
         if (! is_array($body)) {
-            throw new RuntimeException('Webilia Connect returned an invalid response.');
+            if ($this->isTransientStatus($status)) {
+                throw new TransientException('Webilia Connect returned an invalid response.');
+            }
+
+            throw new RequestException('Webilia Connect returned an invalid response.');
         }
 
-        if (wp_remote_retrieve_response_code($response) >= 400) {
-            throw new RuntimeException((string) ($body['message'] ?? 'Webilia Connect request failed.'));
+        if ($status >= 400) {
+            $message = (string) ($body['message'] ?? 'Webilia Connect request failed.');
+            if ($this->isTransientStatus($status)) {
+                throw new TransientException($message);
+            }
+
+            throw new RequestException($message);
         }
 
         return $body;
+    }
+
+    private function isTransientStatus(int $status): bool
+    {
+        return $status === 408 || $status === 425 || $status === 429 || $status >= 500;
     }
 }

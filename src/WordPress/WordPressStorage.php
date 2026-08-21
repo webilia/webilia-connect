@@ -23,7 +23,9 @@ final class WordPressStorage implements Storage
 
     public function saveConnection(array $connection): void
     {
-        update_option(self::CONNECTION_OPTION, $this->encrypt($connection), false);
+        if (! update_option(self::CONNECTION_OPTION, $this->encrypt($connection), false)) {
+            throw new RuntimeException('Unable to save the Webilia connection credential.');
+        }
     }
 
     public function forgetConnection(): void

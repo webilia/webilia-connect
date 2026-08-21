@@ -16,6 +16,8 @@ unscoped and stable.
 
 The stable contracts are under `Webilia\\Connect\\Contracts`: `Connection`,
 `Capability`, `AuthorizationResult`, `UpdateClient`, `Storage`, and `HttpClient`.
+Pass the product's update capability to `WordPress\\UpdateClient`; when omitted,
+the adapter uses the conventional `{integration}.update` capability name.
 
 ## Versioning and consumer releases
 

@@ -13,14 +13,16 @@ final class UpdateClient implements UpdateClientContract
     private string $basename;
     private string $coreVersion;
     private string $slug;
+    private string $updateCapability;
 
-    public function __construct(Client $connect, string $integration, string $version, string $basename, string $coreVersion = '')
+    public function __construct(Client $connect, string $integration, string $version, string $basename, string $coreVersion = '', string $updateCapability = '')
     {
         $this->connect = $connect;
         $this->integration = $integration;
         $this->version = $version;
         $this->basename = $basename;
         $this->coreVersion = $coreVersion;
+        $this->updateCapability = $updateCapability !== '' ? $updateCapability : $integration.'.update';
         $parts = explode('/', $basename);
         $this->slug = str_replace('.php', '', (string) end($parts));
 
@@ -74,7 +76,7 @@ final class UpdateClient implements UpdateClientContract
     private function information(): ?array
     {
         try {
-            $authorization = $this->connect->authorize($this->integration, 'vertex.pro.update');
+            $authorization = $this->connect->authorize($this->integration, $this->updateCapability);
             if (! $authorization->allowed()) {
                 return null;
             }
