@@ -31,7 +31,7 @@ final class WordPressHttpClient implements HttpClient
             throw new RequestException('Webilia Connect returned an invalid response.', $status);
         }
 
-        if ($status >= 400) {
+        if ($status < 200 || $status >= 300) {
             $message = (string) ($body['message'] ?? 'Webilia Connect request failed.');
             if ($this->isTransientStatus($status)) {
                 throw new TransientException($message);

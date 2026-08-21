@@ -111,7 +111,11 @@ final class Client
         ];
 
         $this->storage->saveConnection($connection);
-        $this->storage->forgetPending($state);
+        try {
+            $this->storage->forgetPending($state);
+        } catch (\Throwable $exception) {
+            // The connection is already durable; its expiring pending record is safe to leave behind.
+        }
 
         return new Connection($connection);
     }
@@ -137,6 +141,12 @@ final class Client
             }
 
             return $result;
+        } catch (RequestException $exception) {
+            if ($cacheKey !== null) {
+                $this->storage->forgetAuthorization($cacheKey);
+            }
+
+            throw $exception;
         } catch (TransientException $exception) {
             $cached = $cacheKey === null ? null : $this->storage->authorization($cacheKey);
             if ($cached && (int) ($cached['cache_until'] ?? 0) >= time()) {

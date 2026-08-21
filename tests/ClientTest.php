@@ -35,8 +35,12 @@ class ClientTest extends TestCase
         $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
         $client = new Client(new PermanentFailingHttpClient(), $storage);
 
-        $this->expectException(RequestException::class);
-        $client->authorize('vertex-addons-pro', 'vertex.pro.use');
+        try {
+            $client->authorize('vertex-addons-pro', 'vertex.pro.use');
+            $this->fail('Expected a permanent authorization failure.');
+        } catch (RequestException $exception) {
+            $this->assertNull($storage->authorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use')));
+        }
     }
 
     public function test_authorization_does_not_reuse_a_previous_connections_cache(): void
@@ -122,6 +126,22 @@ class ClientTest extends TestCase
 
         $this->assertSame($first, $storage->pending('first'));
         $this->assertSame($second, $storage->pending('second'));
+    }
+
+    public function test_pending_cleanup_failure_does_not_mask_a_completed_connection(): void
+    {
+        $storage = new FailingPendingCleanupStorage($this->connection());
+        $storage->savePending(['state' => 'state', 'verifier' => 'verifier', 'site_url' => 'https://example.test', 'expires_at' => time() + 60]);
+        $client = new Client(new SuccessfulHttpClient(['data' => [
+            'connection_id' => 1,
+            'credential' => 'wcx_new',
+            'site_url' => 'https://example.test',
+            'status' => 'active',
+        ]]), $storage);
+
+        $connection = $client->complete('code', 'state');
+
+        $this->assertSame('wcx_new', $connection->credential());
     }
 
     public function test_disconnect_cleans_up_an_already_revoked_credential(): void
@@ -266,4 +286,12 @@ class ReadOnceStorage implements Storage
     public function authorization(string $key): ?array { return null; }
     public function saveAuthorization(string $key, array $authorization): void {}
     public function forgetAuthorization(string $key): void {}
+}
+
+class FailingPendingCleanupStorage extends InMemoryStorage
+{
+    public function forgetPending(string $state): void
+    {
+        throw new RuntimeException('Pending cleanup failed.');
+    }
 }
