@@ -44,6 +44,10 @@ final class Client
      */
     public function begin(string $integration, string $siteUrl, string $returnUrl): string
     {
+        if (! $this->siteMatchesCurrentSite($siteUrl)) {
+            throw new RuntimeException('Webilia Connect can only connect the current website.');
+        }
+
         $state = $this->randomToken();
         $verifier = $this->randomToken();
         $challenge = rtrim(strtr(base64_encode(hash('sha256', $verifier, true)), '+/', '-_'), '=');
@@ -91,6 +95,12 @@ final class Client
 
         if (! hash_equals((string) ($pending['state'] ?? ''), $state)) {
             throw new RuntimeException('Webilia Connect returned an invalid state.');
+        }
+
+        if (! $this->siteMatchesCurrentSite((string) ($pending['site_url'] ?? ''))) {
+            $this->storage->forgetPending($state);
+
+            throw new RuntimeException('This Webilia Connect request belongs to a different website.');
         }
 
         $response = $this->http->post($this->endpoint('/v1/connect/exchanges'), [
@@ -180,7 +190,7 @@ final class Client
 
     public function disconnect(): void
     {
-        $connection = $this->requiredConnection();
+        $connection = $this->activeConnection();
         try {
             $this->data($this->http->post($this->endpoint('/v1/connect/disconnect'), [], $this->bearer($connection)));
         } catch (RequestException $exception) {
@@ -194,8 +204,18 @@ final class Client
 
     private function requiredConnection(): Connection
     {
+        $connection = $this->activeConnection();
+        if (! $this->belongsToCurrentSite($connection)) {
+            throw new RuntimeException('This website is not connected to Webilia.');
+        }
+
+        return $connection;
+    }
+
+    private function activeConnection(): Connection
+    {
         $connection = $this->connection();
-        if (! $connection || ! $connection->active() || ! $this->belongsToCurrentSite($connection)) {
+        if (! $connection || ! $connection->active()) {
             throw new RuntimeException('This website is not connected to Webilia.');
         }
 
@@ -232,7 +252,12 @@ final class Client
 
     private function belongsToCurrentSite(Connection $connection): bool
     {
-        return $this->siteUrl === '' || $this->siteUrl === $this->normalizeSiteUrl($connection->siteUrl());
+        return $this->siteMatchesCurrentSite($connection->siteUrl());
+    }
+
+    private function siteMatchesCurrentSite(string $siteUrl): bool
+    {
+        return $this->siteUrl === '' || $this->siteUrl === $this->normalizeSiteUrl($siteUrl);
     }
 
     private function wordpressSiteUrl(): string

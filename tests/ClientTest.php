@@ -140,6 +140,37 @@ class ClientTest extends TestCase
         $client->authorize('vertex-addons-pro', 'vertex.pro.use');
     }
 
+    public function test_a_mismatched_pending_request_is_not_exchanged(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $http = new CountingHttpClient();
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://clone.test');
+
+        try {
+            $client->complete('code', 'state');
+            $this->fail('Expected the mismatched request to be rejected.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame(0, $http->calls());
+            $this->assertNull($storage->pending('state'));
+        }
+    }
+
+    public function test_a_mismatched_connection_can_be_disconnected(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $client = new Client(new SuccessfulHttpClient([]), $storage, 'https://api.webilia.test', 'https://clone.test');
+
+        $client->disconnect();
+
+        $this->assertNull($storage->connection());
+    }
+
     public function test_authorization_cache_keys_do_not_collide(): void
     {
         $storage = new InMemoryStorage($this->connection());
@@ -275,6 +306,23 @@ class SuccessfulHttpClient implements HttpClient
     public function post(string $url, array $payload, array $headers = []): array
     {
         return $this->response;
+    }
+}
+
+class CountingHttpClient implements HttpClient
+{
+    private int $calls = 0;
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        ++$this->calls;
+
+        return [];
+    }
+
+    public function calls(): int
+    {
+        return $this->calls;
     }
 }
 

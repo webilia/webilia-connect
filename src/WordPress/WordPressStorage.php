@@ -38,9 +38,17 @@ final class WordPressStorage implements Storage
 
     public function pending(string $state): ?array
     {
-        $value = get_transient($this->pendingOption($state));
+        $option = $this->pendingOption($state);
+        $value = get_option($option, []);
+        if (! is_array($value) || (int) ($value['expires_at'] ?? 0) < time()) {
+            if (is_array($value)) {
+                $this->forgetPending($state);
+            }
 
-        return is_array($value) && hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
+            return null;
+        }
+
+        return hash_equals((string) ($value['state'] ?? ''), $state) ? $value : null;
     }
 
     public function savePending(array $pending): void
@@ -56,16 +64,16 @@ final class WordPressStorage implements Storage
             throw new RuntimeException('The pending Webilia Connect request has expired.');
         }
 
-        $transient = $this->pendingOption($state);
-        if (! set_transient($transient, $pending, $expiration) && get_transient($transient) !== $pending) {
+        $option = $this->pendingOption($state);
+        if (! update_option($option, $pending, false) && get_option($option, null) !== $pending) {
             throw new RuntimeException('Unable to save the pending Webilia Connect request.');
         }
     }
 
     public function forgetPending(string $state): void
     {
-        $transient = $this->pendingOption($state);
-        if (! delete_transient($transient) && get_transient($transient) !== false) {
+        $option = $this->pendingOption($state);
+        if (! delete_option($option) && get_option($option, null) !== null) {
             throw new RuntimeException('Unable to remove the pending Webilia Connect request.');
         }
     }

@@ -31,6 +31,18 @@ class WordPressStorageTest extends TestCase
         $this->assertNull($storage->authorization('key'));
     }
 
+    public function test_pending_request_is_stored_as_a_durable_option(): void
+    {
+        $storage = new WordPressStorage();
+        $pending = ['state' => 'state', 'verifier' => 'verifier', 'expires_at' => time() + 60];
+        $option = 'webilia_connect_pending_'.hash('sha256', 'state');
+        $storage->savePending($pending);
+
+        $this->assertSame($pending, $storage->pending('state'));
+        $this->assertArrayHasKey($option, WordPressTestState::$options);
+        $this->assertArrayNotHasKey($option, WordPressTestState::$transients);
+    }
+
     public function test_connection_remains_readable_after_authentication_salt_rotation(): void
     {
         $storage = new WordPressStorage();
