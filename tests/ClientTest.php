@@ -143,6 +143,18 @@ class ClientTest extends TestCase
         (new Client(new FailingHttpClient(), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
     }
 
+    public function test_no_cache_authorization_invalidates_an_older_allowance_when_cache_cleanup_fails(): void
+    {
+        $storage = new FailingAuthorizationCleanupStorage($this->connection());
+        $key = $this->authorizationKey('vertex-addons-pro', 'vertex.pro.use');
+        $storage->saveAuthorization($key, ['allowed' => true, 'cache_until' => time() + 3600]);
+
+        $this->assertTrue((new Client(new SuccessfulHttpClient(['data' => ['allowed' => true, 'cache_until' => time()]]), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use')->allowed());
+
+        $this->expectException(TransientException::class);
+        (new Client(new FailingHttpClient(), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+    }
+
     public function test_authorization_evicts_a_cached_allowance_for_an_application_failure(): void
     {
         $storage = new InMemoryStorage($this->connection());
@@ -344,6 +356,29 @@ class ClientTest extends TestCase
             $this->assertSame(2, $http->calls());
             $this->assertSame(['Authorization' => 'Bearer wcx_mismatch'], $http->headers(1));
             $this->assertNull($storage->pending('state'));
+        }
+    }
+
+    public function test_mismatched_exchange_credential_is_queued_when_revocation_fails(): void
+    {
+        $storage = new InMemoryStorage(null);
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $client = new Client(new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_mismatch', 'site_url' => 'https://wrong.test', 'status' => 'active']],
+            new TransientException('Network unavailable'),
+        ]), $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame('revoked', $storage->connection()['status']);
+            $this->assertSame('wcx_mismatch', $storage->connection()['pending_revocation_credential']);
         }
     }
 

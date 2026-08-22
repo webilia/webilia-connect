@@ -134,7 +134,9 @@ final class Client
 
         $completedConnection = new Connection($connection);
         if (! $this->belongsToCurrentSite($completedConnection)) {
-            $this->revokeCredential($credential);
+            if (! $this->revokeCredential($credential)) {
+                $this->queuePendingRevocation($credential);
+            }
             $this->forgetCompletedPending($state);
 
             throw new RuntimeException('Webilia Connect returned a connection for a different website.');
@@ -659,11 +661,7 @@ final class Client
 
         $cacheUntil = min($cacheUntil ?? ($now + self::CACHE_SECONDS), $now + self::CACHE_SECONDS);
         if ($cacheUntil <= $now) {
-            try {
-                $this->storage->forgetAuthorization($cacheKey);
-            } catch (\Throwable $exception) {
-                // Expired cache entries are never accepted during an outage.
-            }
+            $this->invalidateCachedAuthorization($cacheKey, $connection);
 
             return;
         }

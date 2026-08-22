@@ -268,7 +268,7 @@ final class WordPressStorage implements Storage, ConditionalConnectionStorage
             throw new RuntimeException('Unable to create the Webilia connection encryption key.');
         }
 
-        if (! @link($temporaryPath, $path)) {
+        if (! function_exists('link') || ! @link($temporaryPath, $path)) {
             @unlink($temporaryPath);
             $stored = $this->existingKey($path);
             if ($stored !== null) {
