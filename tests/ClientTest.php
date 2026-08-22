@@ -130,6 +130,19 @@ class ClientTest extends TestCase
         $this->assertTrue($client->authorize('vertex-addons-pro', 'vertex.pro.use')->allowed());
     }
 
+    public function test_failed_authorization_cache_refresh_does_not_reuse_the_previous_grant(): void
+    {
+        $storage = new FailingRefreshStorage($this->connection());
+        $key = $this->authorizationKey('vertex-addons-pro', 'vertex.pro.use');
+        $storage->saveAuthorization($key, ['allowed' => true, 'cache_until' => time() + 3600]);
+        $storage->failWrites();
+
+        $this->assertTrue((new Client(new SuccessfulHttpClient(['data' => ['allowed' => true, 'cache_until' => time() + 60]]), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use')->allowed());
+
+        $this->expectException(TransientException::class);
+        (new Client(new FailingHttpClient(), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+    }
+
     public function test_authorization_evicts_a_cached_allowance_for_an_application_failure(): void
     {
         $storage = new InMemoryStorage($this->connection());
@@ -377,6 +390,29 @@ class ClientTest extends TestCase
         try {
             $client->complete('code', 'state');
         } finally {
+            $this->assertSame('wcx_new', $storage->connection()['pending_revocation_credential']);
+        }
+    }
+
+    public function test_first_exchange_credential_is_queued_when_persistence_and_revocation_fail(): void
+    {
+        $storage = new FailsFirstConnectionSaveStorage(null);
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $client = new Client(new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active']],
+            new TransientException('Network unavailable'),
+        ]), $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame('revoked', $storage->connection()['status']);
             $this->assertSame('wcx_new', $storage->connection()['pending_revocation_credential']);
         }
     }
@@ -751,7 +787,7 @@ class InMemoryStorage implements Storage, ConditionalConnectionStorage
     private array $pending = [];
     private array $authorizations = [];
 
-    public function __construct(array $connection) { $this->connection = $connection; }
+    public function __construct(?array $connection) { $this->connection = $connection; }
     public function connection(): ?array { return $this->connection; }
     public function saveConnection(array $connection): void { $this->connection = $connection; }
     public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
@@ -867,6 +903,25 @@ class FailingAuthorizationWriteStorage extends InMemoryStorage
     public function saveAuthorization(string $key, array $authorization): void
     {
         throw new RuntimeException('Unable to write the authorization cache.');
+    }
+}
+
+class FailingRefreshStorage extends InMemoryStorage
+{
+    private bool $failWrites = false;
+
+    public function failWrites(): void
+    {
+        $this->failWrites = true;
+    }
+
+    public function saveAuthorization(string $key, array $authorization): void
+    {
+        if ($this->failWrites) {
+            throw new RuntimeException('Unable to write the authorization cache.');
+        }
+
+        parent::saveAuthorization($key, $authorization);
     }
 }
 

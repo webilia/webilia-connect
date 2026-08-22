@@ -182,7 +182,7 @@ final class Client
             $result = new AuthorizationResult($data);
 
             if ($result->allowed()) {
-                $this->cacheAuthorization($cacheKey, $result);
+                $this->cacheAuthorization($cacheKey, $result, $connection);
             } elseif ($cacheKey !== null) {
                 $this->invalidateCachedAuthorization($cacheKey, $connection);
             }
@@ -561,7 +561,26 @@ final class Client
     {
         for ($attempt = 0; $attempt < 2; ++$attempt) {
             $connection = $this->connection();
-            if (! $connection || ! $this->belongsToCurrentSite($connection)) {
+            if (! $connection) {
+                $payload = [
+                    'connection_id' => 0,
+                    'credential' => '',
+                    'site_url' => $this->siteUrl,
+                    'status' => 'revoked',
+                    'connection_revision' => $this->randomToken(),
+                ];
+                $this->setPendingRevocationCredentials($payload, [$credential]);
+
+                try {
+                    $this->saveConnectionIfCurrent($payload, null);
+                } catch (\Throwable $exception) {
+                    // No durable storage is available to retain the cleanup tombstone.
+                }
+
+                return;
+            }
+
+            if (! $this->belongsToCurrentSite($connection)) {
                 return;
             }
 
@@ -625,7 +644,7 @@ final class Client
             : null;
     }
 
-    private function cacheAuthorization(?string $cacheKey, AuthorizationResult $result): void
+    private function cacheAuthorization(?string $cacheKey, AuthorizationResult $result, Connection $connection): void
     {
         if ($cacheKey === null) {
             return;
@@ -653,7 +672,8 @@ final class Client
         try {
             $this->storage->saveAuthorization($cacheKey, $payload);
         } catch (\Throwable $exception) {
-            // A fresh API authorization is valid even if its outage cache cannot be written.
+            // The fresh API authorization is valid, but an older outage cache is not.
+            $this->invalidateCachedAuthorization($cacheKey, $connection);
         }
     }
 }
