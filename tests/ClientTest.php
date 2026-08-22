@@ -382,6 +382,30 @@ class ClientTest extends TestCase
         }
     }
 
+    public function test_mismatched_exchange_credential_is_queued_beside_a_cloned_connection(): void
+    {
+        $cloned = $this->connection();
+        $cloned['site_url'] = 'https://original.test';
+        $storage = new InMemoryStorage($cloned);
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $client = new Client(new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_mismatch', 'site_url' => 'https://wrong.test', 'status' => 'active']],
+            new TransientException('Network unavailable'),
+        ]), $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
+            $this->assertSame('wcx_mismatch', $storage->connection()['pending_revocation_credential']);
+        }
+    }
+
     public function test_exchange_credential_is_revoked_when_persistence_fails(): void
     {
         $storage = new FailingConnectionStorage($this->connection());
@@ -448,6 +472,28 @@ class ClientTest extends TestCase
             $client->complete('code', 'state');
         } finally {
             $this->assertSame('revoked', $storage->connection()['status']);
+            $this->assertSame('wcx_new', $storage->connection()['pending_revocation_credential']);
+        }
+    }
+
+    public function test_first_exchange_credential_retries_tombstone_creation_after_a_race(): void
+    {
+        $storage = new EmptyCasRacingStorage(null);
+        $storage->savePending([
+            'state' => 'state',
+            'verifier' => 'verifier',
+            'site_url' => 'https://example.test',
+            'expires_at' => time() + 60,
+        ]);
+        $client = new Client(new SequenceHttpClient([
+            ['data' => ['connection_id' => 2, 'credential' => 'wcx_new', 'site_url' => 'https://example.test', 'status' => 'active']],
+            new TransientException('Network unavailable'),
+        ]), $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->expectException(RuntimeException::class);
+        try {
+            $client->complete('code', 'state');
+        } finally {
             $this->assertSame('wcx_new', $storage->connection()['pending_revocation_credential']);
         }
     }
@@ -1057,6 +1103,33 @@ class FailsFirstConnectionSaveStorage extends InMemoryStorage
     {
         if (! $this->failed) {
             $this->failed = true;
+
+            return false;
+        }
+
+        return parent::saveConnectionIfCurrent($connection, $expectedCredential, $expectedRevision);
+    }
+}
+
+class EmptyCasRacingStorage extends InMemoryStorage
+{
+    private int $saves = 0;
+
+    public function saveConnectionIfCurrent(array $connection, ?string $expectedCredential, ?string $expectedRevision): bool
+    {
+        ++$this->saves;
+        if ($this->saves === 1) {
+            return false;
+        }
+
+        if ($this->saves === 2) {
+            $this->saveConnection([
+                'connection_id' => 3,
+                'credential' => 'wcx_concurrent',
+                'site_url' => 'https://example.test',
+                'status' => 'active',
+                'connection_revision' => 'concurrent',
+            ]);
 
             return false;
         }

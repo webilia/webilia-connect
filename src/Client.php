@@ -241,7 +241,17 @@ final class Client
         }
 
         if (! $this->belongsToCurrentSite($connection)) {
-            $this->forgetConnectionIfCurrent($connection);
+            $this->retryPendingRevocation($connection);
+            $currentConnection = $this->connection();
+            if ($currentConnection
+                && hash_equals($connection->credential(), $currentConnection->credential())
+                && $this->hasPendingRevocations($currentConnection)) {
+                throw new RuntimeException('Unable to disconnect until the previous Webilia credential is revoked.');
+            }
+
+            if ($currentConnection && hash_equals($connection->credential(), $currentConnection->credential())) {
+                $this->forgetConnectionIfCurrent($currentConnection);
+            }
 
             return;
         }
@@ -574,16 +584,15 @@ final class Client
                 $this->setPendingRevocationCredentials($payload, [$credential]);
 
                 try {
-                    $this->saveConnectionIfCurrent($payload, null);
+                    if ($this->saveConnectionIfCurrent($payload, null)) {
+                        return;
+                    }
                 } catch (\Throwable $exception) {
                     // No durable storage is available to retain the cleanup tombstone.
+                    return;
                 }
 
-                return;
-            }
-
-            if (! $this->belongsToCurrentSite($connection)) {
-                return;
+                continue;
             }
 
             $payload = $connection->payload();
