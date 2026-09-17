@@ -3,7 +3,6 @@
   "description": "Webilia Connect SDK for WordPress products.",
   "type": "library",
   "license": "MIT",
-  "version": "1.0.2",
   "require": {
     "php": ">=7.4",
     "ext-json": "*",
