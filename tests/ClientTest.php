@@ -7,6 +7,7 @@ use RuntimeException;
 use Webilia\Connect\AuthorizationResult;
 use Webilia\Connect\Client;
 use Webilia\Connect\Contracts\ConditionalConnectionStorage;
+use Webilia\Connect\Contracts\GetHttpClient;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
 use Webilia\Connect\Exception\RequestException;
@@ -734,6 +735,28 @@ class ClientTest extends TestCase
         $this->assertStringContainsString('/integrations/foo%2Fbar/updates', $http->url());
     }
 
+    public function test_overture_methods_use_the_connected_sites_bearer_credential(): void
+    {
+        $http = new OvertureHttpClient();
+        $client = new Client($http, new InMemoryStorage($this->connection()));
+
+        $categories = $client->overturePlaceCategories(['q' => 'restaurant', 'limit' => 10]);
+        $search = $client->overturePlacesSearch([
+            'idempotency_key' => 'c17d7103-4961-4eba-b1b8-c9733eafaf36',
+            'categories' => ['restaurant'],
+            'area' => ['latitude' => 49.285, 'longitude' => -122.79, 'radius_km' => 10],
+            'limit' => 10,
+        ]);
+
+        $this->assertSame('restaurant', $categories['categories'][0]['code']);
+        $this->assertSame(1, $search['meta']['credits_charged']);
+        $this->assertSame('/v1/connect/overture/places/categories', parse_url($http->getUrl, PHP_URL_PATH));
+        $this->assertSame(['q' => 'restaurant', 'limit' => 10], $http->query);
+        $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
+        $this->assertSame('/v1/connect/overture/places/search', parse_url($http->postUrl, PHP_URL_PATH));
+        $this->assertSame(['restaurant'], $http->payload['categories']);
+    }
+
     private function connection(): array
     {
         return [
@@ -1207,5 +1230,32 @@ class MetadataChangingDisconnectHttpClient implements HttpClient
         $this->storage->saveConnection($connection);
 
         return [];
+    }
+}
+
+class OvertureHttpClient implements GetHttpClient
+{
+    public string $getUrl = '';
+    public string $postUrl = '';
+    public array $query = [];
+    public array $payload = [];
+    public array $headers = [];
+
+    public function get(string $url, array $query = [], array $headers = []): array
+    {
+        $this->getUrl = $url;
+        $this->query = $query;
+        $this->headers = $headers;
+
+        return ['data' => ['taxonomy_version' => '2026-03-04', 'categories' => [['code' => 'restaurant']]]];
+    }
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        $this->postUrl = $url;
+        $this->payload = $payload;
+        $this->headers = $headers;
+
+        return ['data' => ['places' => [], 'meta' => ['credits_charged' => 1]]];
     }
 }
