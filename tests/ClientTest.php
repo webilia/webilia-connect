@@ -288,6 +288,45 @@ class ClientTest extends TestCase
         $this->assertSame(1, $storage->connectionReads());
     }
 
+    public function test_connection_verification_confirms_the_current_site_with_the_server(): void
+    {
+        $http = new ConnectionStatusHttpClient(['data' => ['status' => 'active', 'site_url' => 'https://example.test']]);
+        $client = new Client($http, new InMemoryStorage($this->connection()));
+
+        $this->assertTrue($client->verifyConnection());
+        $this->assertSame('/v1/connect/status', parse_url($http->postUrl, PHP_URL_PATH));
+        $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
+    }
+
+    public function test_connection_verification_removes_a_missing_server_connection(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $client = new Client(new ConnectionStatusHttpClient([], new RequestException('Connection revoked', 401)), $storage);
+
+        $this->expectException(RequestException::class);
+        try {
+            $client->verifyConnection();
+        } finally {
+            $this->assertNull($storage->connection());
+        }
+    }
+
+    public function test_connection_verification_retries_a_queued_revocation_before_checking_status(): void
+    {
+        $connection = $this->connection();
+        $connection['pending_revocation_credential'] = 'wcx_old';
+        $storage = new InMemoryStorage($connection);
+        $http = new SequenceHttpClient([
+            [],
+            ['data' => ['status' => 'active', 'site_url' => 'https://example.test']],
+        ]);
+
+        $this->assertTrue((new Client($http, $storage))->verifyConnection());
+        $this->assertSame(2, $http->calls());
+        $this->assertSame('Bearer wcx_test', $http->headers(1)['Authorization']);
+        $this->assertArrayNotHasKey('pending_revocation_credential', $storage->connection());
+    }
+
     public function test_a_connection_copied_to_a_different_site_is_rejected(): void
     {
         $client = new Client(
@@ -1230,6 +1269,32 @@ class MetadataChangingDisconnectHttpClient implements HttpClient
         $this->storage->saveConnection($connection);
 
         return [];
+    }
+}
+
+class ConnectionStatusHttpClient implements HttpClient
+{
+    public string $postUrl = '';
+    public array $headers = [];
+    private array $response;
+    private ?\Throwable $exception;
+
+    public function __construct(array $response, ?\Throwable $exception = null)
+    {
+        $this->response = $response;
+        $this->exception = $exception;
+    }
+
+    public function post(string $url, array $payload, array $headers = []): array
+    {
+        $this->postUrl = $url;
+        $this->headers = $headers;
+
+        if ($this->exception) {
+            throw $this->exception;
+        }
+
+        return $this->response;
     }
 }
 
