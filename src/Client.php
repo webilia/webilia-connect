@@ -49,6 +49,8 @@ final class Client
     public function verifyConnection(): bool
     {
         $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
 
         try {
             $status = $this->data($this->http->post($this->endpoint('/v1/connect/status'), [], $this->bearer($connection)));
