@@ -4,6 +4,7 @@ namespace Webilia\Connect;
 
 use RuntimeException;
 use Webilia\Connect\Contracts\ConditionalConnectionStorage;
+use Webilia\Connect\Contracts\GetHttpClient;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
 use Webilia\Connect\Exception\RequestException;
@@ -252,6 +253,55 @@ final class Client
                 'version' => $version,
                 'core_version' => $coreVersion,
             ], $this->bearer($connection)));
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * Retrieve the API-owned Overture Places taxonomy for the connected site.
+     *
+     * @param array<string, scalar|null> $query
+     * @return array<string, mixed>
+     */
+    public function overturePlaceCategories(array $query = []): array
+    {
+        $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
+        if (! $this->http instanceof GetHttpClient) {
+            throw new RuntimeException('This Webilia Connect HTTP client does not support category requests.');
+        }
+
+        try {
+            return $this->data($this->http->get($this->endpoint('/v1/connect/overture/places/categories'), $query, $this->bearer($connection)));
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * Execute one bounded, metered Overture Places search for the connected site.
+     *
+     * @param array<string, mixed> $request
+     * @return array<string, mixed>
+     */
+    public function overturePlacesSearch(array $request): array
+    {
+        $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
+
+        try {
+            return $this->data($this->http->post($this->endpoint('/v1/connect/overture/places/search'), $request, $this->bearer($connection)));
         } catch (RequestException $exception) {
             if ($exception->getCode() === 401) {
                 $this->forgetRejectedConnection($connection);
