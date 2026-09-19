@@ -41,6 +41,34 @@ final class Client
     }
 
     /**
+     * Confirm that the locally stored connection is still active on Webilia.
+     *
+     * @throws RuntimeException|RequestException|TransientException
+     */
+    public function verifyConnection(): bool
+    {
+        $connection = $this->requiredConnection();
+
+        try {
+            $status = $this->data($this->http->post($this->endpoint('/v1/connect/status'), [], $this->bearer($connection)));
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
+
+            throw $exception;
+        }
+
+        if (($status['status'] ?? '') !== 'active' || ! $this->siteMatchesCurrentSite((string) ($status['site_url'] ?? ''))) {
+            $this->forgetRejectedConnection($connection);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
      * @return string Browser URL for the administrator to open.
      */
     public function begin(string $integration, string $siteUrl, string $returnUrl): string
