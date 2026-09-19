@@ -2,11 +2,11 @@
 
 namespace Webilia\Connect\WordPress;
 
-use Webilia\Connect\Contracts\HttpClient;
+use Webilia\Connect\Contracts\GetHttpClient;
 use Webilia\Connect\Exception\RequestException;
 use Webilia\Connect\Exception\TransientException;
 
-final class WordPressHttpClient implements HttpClient
+final class WordPressHttpClient implements GetHttpClient
 {
     /** @inheritDoc */
     public function post(string $url, array $payload, array $headers = []): array
@@ -17,6 +17,25 @@ final class WordPressHttpClient implements HttpClient
             'body' => wp_json_encode($payload),
         ]);
 
+        return $this->decode($response);
+    }
+
+    /** @inheritDoc */
+    public function get(string $url, array $query = [], array $headers = []): array
+    {
+        if ($query !== []) {
+            $url .= (strpos($url, '?') === false ? '?' : '&').http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+        }
+
+        return $this->decode(wp_remote_get($url, [
+            'timeout' => 15,
+            'headers' => array_merge(['Accept' => 'application/json'], $headers),
+        ]));
+    }
+
+    /** @param array<string, mixed>|\WP_Error $response */
+    private function decode($response): array
+    {
         if (is_wp_error($response)) {
             throw new TransientException($response->get_error_message());
         }
