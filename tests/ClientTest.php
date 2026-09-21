@@ -1325,7 +1325,7 @@ class OvertureHttpClient implements GetHttpClient
         $this->query = $query;
         $this->headers = $headers;
 
-        if (str_ends_with($url, '/credits/balance')) {
+        if (substr($url, -strlen('/credits/balance')) === '/credits/balance') {
             return ['data' => ['credits_balance' => 42]];
         }
 
