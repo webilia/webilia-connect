@@ -291,6 +291,31 @@ final class Client
     }
 
     /**
+     * Retrieve the current Webilia Credits balance for the connected site's owner.
+     *
+     * @return array<string, mixed>
+     */
+    public function creditBalance(): array
+    {
+        $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
+        if (! $this->http instanceof GetHttpClient) {
+            throw new RuntimeException('This Webilia Connect HTTP client does not support credit balance requests.');
+        }
+
+        try {
+            return $this->data($this->http->get($this->endpoint('/v1/connect/credits/balance'), [], $this->bearer($connection)));
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
      * Execute one bounded, metered Overture Places search for the connected site.
      *
      * @param array<string, mixed> $request

@@ -796,6 +796,19 @@ class ClientTest extends TestCase
         $this->assertSame(['restaurant'], $http->payload['categories']);
     }
 
+    public function test_credit_balance_uses_the_connected_sites_bearer_credential(): void
+    {
+        $http = new OvertureHttpClient();
+        $client = new Client($http, new InMemoryStorage($this->connection()));
+
+        $balance = $client->creditBalance();
+
+        $this->assertSame(42, $balance['credits_balance']);
+        $this->assertSame('/v1/connect/credits/balance', parse_url($http->getUrl, PHP_URL_PATH));
+        $this->assertSame([], $http->query);
+        $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
+    }
+
     private function connection(): array
     {
         return [
@@ -1311,6 +1324,10 @@ class OvertureHttpClient implements GetHttpClient
         $this->getUrl = $url;
         $this->query = $query;
         $this->headers = $headers;
+
+        if (substr($url, -strlen('/credits/balance')) === '/credits/balance') {
+            return ['data' => ['credits_balance' => 42]];
+        }
 
         return ['data' => ['taxonomy_version' => '2026-03-04', 'categories' => [['code' => 'restaurant']]]];
     }
