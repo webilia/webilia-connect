@@ -13,16 +13,23 @@ final class UpdateClient implements UpdateClientContract
     private string $basename;
     private string $coreVersion;
     private string $slug;
-    private string $updateCapability;
+    /** @var callable|null */
+    private $fallback;
+    private bool $informationResolved = false;
+    /** @var array<string, mixed>|null */
+    private ?array $information = null;
 
-    public function __construct(Client $connect, string $integration, string $version, string $basename, string $coreVersion = '', string $updateCapability = '')
+    /**
+     * @param callable(): array<string, mixed>|object|false|null $fallback
+     */
+    public function __construct(Client $connect, string $integration, string $version, string $basename, string $coreVersion = '', string $updateCapability = '', ?callable $fallback = null)
     {
         $this->connect = $connect;
         $this->integration = $integration;
         $this->version = $version;
         $this->basename = $basename;
         $this->coreVersion = $coreVersion;
-        $this->updateCapability = $updateCapability !== '' ? $updateCapability : $integration.'.update';
+        $this->fallback = $fallback;
         $directory = trim(dirname($basename), '.');
         $this->slug = $directory !== ''
             ? basename($directory)
@@ -80,15 +87,34 @@ final class UpdateClient implements UpdateClientContract
     /** @return array<string, mixed>|null */
     private function information(): ?array
     {
-        try {
-            $authorization = $this->connect->authorize($this->integration, $this->updateCapability);
-            if (! $authorization->allowed()) {
-                return null;
-            }
+        if ($this->informationResolved) {
+            return $this->information;
+        }
 
+        $this->informationResolved = true;
+
+        try {
             $update = $this->connect->update($this->integration, $this->basename, $this->version, $this->coreVersion);
 
-            return ($update['allowed'] ?? null) === true ? $update : null;
+            if (($update['allowed'] ?? null) === true) {
+                return $this->information = $update;
+            }
+        } catch (\Throwable $exception) {
+            // A connected account may not own every installed product. Let the
+            // host application preserve its legacy update channel in that case.
+        }
+
+        if (! is_callable($this->fallback)) {
+            return null;
+        }
+
+        try {
+            $fallback = call_user_func($this->fallback);
+            if (is_object($fallback)) {
+                $fallback = get_object_vars($fallback);
+            }
+
+            return is_array($fallback) ? $this->information = $fallback : null;
         } catch (\Throwable $exception) {
             return null;
         }

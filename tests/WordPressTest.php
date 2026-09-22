@@ -102,7 +102,6 @@ class UpdateClientTest extends TestCase
     {
         $connect = new Client(
             new WordPressSequenceHttpClient([
-                ['data' => ['allowed' => true]],
                 ['data' => ['allowed' => 'false', 'new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip']],
             ]),
             new WordPressMemoryStorage()
@@ -119,7 +118,6 @@ class UpdateClientTest extends TestCase
     {
         $connect = new Client(
             new WordPressSequenceHttpClient([
-                ['data' => ['allowed' => true]],
                 ['data' => ['allowed' => true, 'new_version' => '2.0.0', 'download_link' => '']],
             ]),
             new WordPressMemoryStorage()
@@ -131,12 +129,61 @@ class UpdateClientTest extends TestCase
 
         $this->assertObjectNotHasProperty('response', $result);
     }
+
+    public function test_update_check_uses_one_connect_request_and_memoizes_its_information(): void
+    {
+        $http = new WordPressSequenceHttpClient([
+            ['data' => ['allowed' => true, 'new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip']],
+        ]);
+        $client = new UpdateClient(
+            new Client($http, new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php'
+        );
+        $transient = (object) ['checked' => ['vertex/vertex.php' => '1.0.0']];
+
+        $client->checkUpdate($transient);
+        $client->checkUpdate($transient);
+        $client->checkInfo(false, 'plugin_information', (object) ['slug' => 'vertex']);
+
+        $this->assertSame(1, $http->calls());
+    }
+
+    public function test_update_check_falls_back_once_when_connect_denies_the_product(): void
+    {
+        $http = new WordPressSequenceHttpClient([
+            ['data' => ['allowed' => false]],
+        ]);
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client($http, new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return (object) ['new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip'];
+            }
+        );
+        $transient = (object) ['checked' => ['vertex/vertex.php' => '1.0.0']];
+
+        $client->checkUpdate($transient);
+        $client->checkUpdate($transient);
+
+        $this->assertSame(1, $http->calls());
+        $this->assertSame(1, $fallbackCalls);
+    }
 }
 
 class WordPressSequenceHttpClient implements HttpClient
 {
     /** @var array<int, array<string, mixed>> */
     private $responses;
+    private $calls = 0;
 
     /** @param array<int, array<string, mixed>> $responses */
     public function __construct(array $responses)
@@ -146,7 +193,14 @@ class WordPressSequenceHttpClient implements HttpClient
 
     public function post(string $url, array $payload, array $headers = []): array
     {
+        ++$this->calls;
+
         return array_shift($this->responses) ?? [];
+    }
+
+    public function calls(): int
+    {
+        return $this->calls;
     }
 }
 

@@ -205,6 +205,11 @@ final class Client
         $connection = $this->requiredConnection();
         $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
+        $cached = $this->cachedAuthorization($cacheKey);
+        if ($cached !== null) {
+            return $cached;
+        }
+
         try {
             $response = $this->http->post($this->endpoint('/v1/connect/authorizations'), [
                 'integration' => $integration,
@@ -231,11 +236,9 @@ final class Client
 
             throw $exception;
         } catch (TransientException $exception) {
-            $cached = $cacheKey === null ? null : $this->storage->authorization($cacheKey);
-            if ($cached && (int) ($cached['cache_until'] ?? 0) >= time()) {
-                $cached['cached'] = true;
-
-                return new AuthorizationResult($cached);
+            $cached = $this->cachedAuthorization($cacheKey);
+            if ($cached !== null) {
+                return $cached;
             }
 
             throw $exception;
@@ -787,5 +790,21 @@ final class Client
             // The fresh API authorization is valid, but an older outage cache is not.
             $this->invalidateCachedAuthorization($cacheKey, $connection);
         }
+    }
+
+    private function cachedAuthorization(?string $cacheKey): ?AuthorizationResult
+    {
+        if ($cacheKey === null) {
+            return null;
+        }
+
+        $cached = $this->storage->authorization($cacheKey);
+        if (! is_array($cached) || ($cached['allowed'] ?? null) !== true || (int) ($cached['cache_until'] ?? 0) <= time()) {
+            return null;
+        }
+
+        $cached['cached'] = true;
+
+        return new AuthorizationResult($cached);
     }
 }
