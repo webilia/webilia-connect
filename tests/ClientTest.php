@@ -45,6 +45,15 @@ class ClientTest extends TestCase
         $this->assertSame(0, $http->calls());
     }
 
+    public function test_authorization_uses_the_api_when_reading_the_cache_fails(): void
+    {
+        $storage = new FailingAuthorizationReadStorage($this->connection());
+
+        $result = (new Client(new SuccessfulHttpClient(['data' => ['allowed' => true]]), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+
+        $this->assertTrue($result->allowed());
+    }
+
     public function test_authorization_does_not_use_cached_allowance_for_a_permanent_failure(): void
     {
         $storage = new InMemoryStorage($this->connection());
@@ -1072,6 +1081,14 @@ class FailingAuthorizationWriteStorage extends InMemoryStorage
     public function saveAuthorization(string $key, array $authorization): void
     {
         throw new RuntimeException('Unable to write the authorization cache.');
+    }
+}
+
+class FailingAuthorizationReadStorage extends InMemoryStorage
+{
+    public function authorization(string $key): ?array
+    {
+        throw new RuntimeException('Unable to read the authorization cache.');
     }
 }
 

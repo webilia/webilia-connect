@@ -798,7 +798,12 @@ final class Client
             return null;
         }
 
-        $cached = $this->storage->authorization($cacheKey);
+        try {
+            $cached = $this->storage->authorization($cacheKey);
+        } catch (\Throwable $exception) {
+            return null;
+        }
+
         if (! is_array($cached) || ($cached['allowed'] ?? null) !== true || (int) ($cached['cache_until'] ?? 0) <= time()) {
             return null;
         }

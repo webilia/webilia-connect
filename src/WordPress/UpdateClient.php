@@ -13,6 +13,7 @@ final class UpdateClient implements UpdateClientContract
     private string $basename;
     private string $coreVersion;
     private string $slug;
+    private string $updateCapability;
     /** @var callable|null */
     private $fallback;
     private bool $informationResolved = false;
@@ -29,6 +30,7 @@ final class UpdateClient implements UpdateClientContract
         $this->version = $version;
         $this->basename = $basename;
         $this->coreVersion = $coreVersion;
+        $this->updateCapability = $updateCapability !== '' ? $updateCapability : $integration.'.update';
         $this->fallback = $fallback;
         $directory = trim(dirname($basename), '.');
         $this->slug = $directory !== ''
@@ -94,6 +96,15 @@ final class UpdateClient implements UpdateClientContract
         $this->informationResolved = true;
 
         try {
+            // The updates endpoint verifies the default update capability itself.
+            // Preserve custom capabilities, whose intent the endpoint cannot infer.
+            if ($this->updateCapability !== $this->integration.'.update') {
+                $authorization = $this->connect->authorize($this->integration, $this->updateCapability);
+                if (! $authorization->allowed()) {
+                    return $this->fallbackInformation();
+                }
+            }
+
             $update = $this->connect->update($this->integration, $this->basename, $this->version, $this->coreVersion);
 
             if (($update['allowed'] ?? null) === true) {
@@ -104,6 +115,12 @@ final class UpdateClient implements UpdateClientContract
             // host application preserve its legacy update channel in that case.
         }
 
+        return $this->fallbackInformation();
+    }
+
+    /** @return array<string, mixed>|null */
+    private function fallbackInformation(): ?array
+    {
         if (! is_callable($this->fallback)) {
             return null;
         }
