@@ -205,7 +205,7 @@ final class Client
         $connection = $this->requiredConnection();
         $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
-        $cached = $this->cachedAuthorization($cacheKey);
+        $cached = $this->cachedAuthorization($cacheKey, true);
         if ($cached !== null) {
             return $cached;
         }
@@ -772,8 +772,10 @@ final class Client
         $now = time();
         $payload = $result->payload();
         $cacheUntil = $result->cacheUntil();
+        $onlineCache = $cacheUntil !== null;
         if ($cacheUntil === null && is_numeric($payload['cache_for_seconds'] ?? null)) {
             $cacheUntil = $now + max(0, (int) $payload['cache_for_seconds']);
+            $onlineCache = true;
         }
 
         $cacheUntil = min($cacheUntil ?? ($now + self::CACHE_SECONDS), $now + self::CACHE_SECONDS);
@@ -784,6 +786,11 @@ final class Client
         }
 
         $payload['cache_until'] = $cacheUntil;
+        if ($onlineCache) {
+            $payload['online_cache'] = true;
+        } else {
+            unset($payload['online_cache']);
+        }
         try {
             $this->storage->saveAuthorization($cacheKey, $payload);
         } catch (\Throwable $exception) {
@@ -792,7 +799,7 @@ final class Client
         }
     }
 
-    private function cachedAuthorization(?string $cacheKey): ?AuthorizationResult
+    private function cachedAuthorization(?string $cacheKey, bool $onlineOnly = false): ?AuthorizationResult
     {
         if ($cacheKey === null) {
             return null;
@@ -805,6 +812,12 @@ final class Client
         }
 
         if (! is_array($cached) || ($cached['allowed'] ?? null) !== true || (int) ($cached['cache_until'] ?? 0) <= time()) {
+            return null;
+        }
+
+        // Older SDKs stored a locally-generated expiry only for use during a
+        // transient outage. Do not turn those grants into online authorization.
+        if ($onlineOnly && ($cached['online_cache'] ?? null) !== true) {
             return null;
         }
 

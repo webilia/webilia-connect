@@ -35,7 +35,7 @@ class ClientTest extends TestCase
     public function test_authorization_does_not_contact_the_api_when_a_valid_allowance_is_cached(): void
     {
         $storage = new InMemoryStorage($this->connection());
-        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60, 'online_cache' => true]);
         $http = new CountingHttpClient();
 
         $result = (new Client($http, $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
@@ -43,6 +43,18 @@ class ClientTest extends TestCase
         $this->assertTrue($result->allowed());
         $this->assertTrue($result->payload()['cached']);
         $this->assertSame(0, $http->calls());
+    }
+
+    public function test_authorization_does_not_use_a_legacy_outage_grant_when_the_api_is_available(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => time() + 60]);
+        $http = new SequenceHttpClient([['data' => ['allowed' => false]]]);
+
+        $result = (new Client($http, $storage))->authorize('vertex-addons-pro', 'vertex.pro.use');
+
+        $this->assertFalse($result->allowed());
+        $this->assertSame(1, $http->calls());
     }
 
     public function test_authorization_uses_the_api_when_reading_the_cache_fails(): void
@@ -259,6 +271,7 @@ class ClientTest extends TestCase
         $cached = $storage->authorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'));
         $this->assertNotNull($cached);
         $this->assertLessThanOrEqual(time() + 30, $cached['cache_until']);
+        $this->assertTrue($cached['online_cache']);
     }
 
     public function test_invalid_callback_state_keeps_the_pending_request(): void
