@@ -205,6 +205,11 @@ final class Client
         $connection = $this->requiredConnection();
         $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
+        $cached = $this->cachedAuthorization($cacheKey, true);
+        if ($cached !== null) {
+            return $cached;
+        }
+
         try {
             $response = $this->http->post($this->endpoint('/v1/connect/authorizations'), [
                 'integration' => $integration,
@@ -231,11 +236,9 @@ final class Client
 
             throw $exception;
         } catch (TransientException $exception) {
-            $cached = $cacheKey === null ? null : $this->storage->authorization($cacheKey);
-            if ($cached && (int) ($cached['cache_until'] ?? 0) >= time()) {
-                $cached['cached'] = true;
-
-                return new AuthorizationResult($cached);
+            $cached = $this->cachedAuthorization($cacheKey);
+            if ($cached !== null) {
+                return $cached;
             }
 
             throw $exception;
@@ -769,8 +772,10 @@ final class Client
         $now = time();
         $payload = $result->payload();
         $cacheUntil = $result->cacheUntil();
+        $onlineCache = $cacheUntil !== null;
         if ($cacheUntil === null && is_numeric($payload['cache_for_seconds'] ?? null)) {
             $cacheUntil = $now + max(0, (int) $payload['cache_for_seconds']);
+            $onlineCache = true;
         }
 
         $cacheUntil = min($cacheUntil ?? ($now + self::CACHE_SECONDS), $now + self::CACHE_SECONDS);
@@ -781,11 +786,43 @@ final class Client
         }
 
         $payload['cache_until'] = $cacheUntil;
+        if ($onlineCache) {
+            $payload['online_cache'] = true;
+        } else {
+            unset($payload['online_cache']);
+        }
         try {
             $this->storage->saveAuthorization($cacheKey, $payload);
         } catch (\Throwable $exception) {
             // The fresh API authorization is valid, but an older outage cache is not.
             $this->invalidateCachedAuthorization($cacheKey, $connection);
         }
+    }
+
+    private function cachedAuthorization(?string $cacheKey, bool $onlineOnly = false): ?AuthorizationResult
+    {
+        if ($cacheKey === null) {
+            return null;
+        }
+
+        try {
+            $cached = $this->storage->authorization($cacheKey);
+        } catch (\Throwable $exception) {
+            return null;
+        }
+
+        if (! is_array($cached) || ($cached['allowed'] ?? null) !== true || (int) ($cached['cache_until'] ?? 0) <= time()) {
+            return null;
+        }
+
+        // Older SDKs stored a locally-generated expiry only for use during a
+        // transient outage. Do not turn those grants into online authorization.
+        if ($onlineOnly && ($cached['online_cache'] ?? null) !== true) {
+            return null;
+        }
+
+        $cached['cached'] = true;
+
+        return new AuthorizationResult($cached);
     }
 }
