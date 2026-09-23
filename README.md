@@ -34,6 +34,16 @@ WordPress adapter does so to protect concurrent callbacks and disconnects.
 Pass the product's update capability to `WordPress\\UpdateClient`; when omitted,
 the adapter uses the conventional `{integration}.update` capability name.
 
+## On-demand status checks
+
+WordPress products can use `new WordPress\\ConnectionStatus($client)` and call
+`isConnected()` when a page needs a verified connection state. Successful
+checks are cached for five minutes across requests. A transient API failure
+keeps the local connection and delays the next status attempt by 30–60 seconds.
+Call `ConnectionStatus::clearCache()` after a completed connection or disconnect.
+Constructing the helper does not contact the API; `Client::verifyConnection()`
+remains the direct, uncached check.
+
 ## Versioning and consumer releases
 
 The package follows semantic versioning. A minor or patch release must retain
