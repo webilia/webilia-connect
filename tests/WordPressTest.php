@@ -133,6 +133,23 @@ class WordPressHttpClientTest extends TestCase
         $this->expectExceptionMessage('Connection timed out');
         (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/status', []);
     }
+
+    public function test_non_json_forbidden_response_is_transient(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => 'Forbidden'];
+
+        $this->expectException(TransientException::class);
+        (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/status', []);
+    }
+
+    public function test_json_application_forbidden_response_remains_permanent(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => '{"message":"Product forbidden"}'];
+
+        $this->expectException(RequestException::class);
+        $this->expectExceptionCode(403);
+        (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/integrations/product/updates', []);
+    }
 }
 
 class ConnectionStatusTest extends TestCase
@@ -169,7 +186,8 @@ class ConnectionStatusTest extends TestCase
         $this->assertNotNull($storage->connection());
         $this->assertTrue((new ConnectionStatus($client))->isConnected());
         $this->assertSame(1, $http->calls());
-        $this->assertGreaterThanOrEqual(time() + 29, WordPressTestState::$transients['webilia_connect_status_backoff']['expires_at']);
+        $this->assertGreaterThanOrEqual(time() + 59, WordPressTestState::$transients['webilia_connect_status_backoff']['expires_at']);
+        $this->assertLessThanOrEqual(time() + 120, WordPressTestState::$transients['webilia_connect_status_backoff']['expires_at']);
 
         delete_transient('webilia_connect_status_backoff');
         $this->assertTrue((new ConnectionStatus($client))->isConnected());
@@ -363,6 +381,62 @@ class UpdateClientTest extends TestCase
         $this->assertSame(1, $http->calls());
         $this->assertSame(1, $fallbackCalls);
         $this->assertSame('2.0.0', $result->response['vertex/vertex.php']->new_version);
+    }
+
+    public function test_waf_forbidden_update_does_not_call_legacy_fallback(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => 'Forbidden'];
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client(new WordPressHttpClient(), new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return false;
+            }
+        );
+
+        try {
+            $result = $client->checkUpdate((object) ['checked' => ['vertex/vertex.php' => '1.0.0']]);
+
+            $this->assertSame(0, $fallbackCalls);
+            $this->assertObjectNotHasProperty('response', $result);
+        } finally {
+            WordPressTestState::$httpResponse = ['status' => 200, 'body' => '{}'];
+        }
+    }
+
+    public function test_json_application_forbidden_update_still_uses_legacy_fallback(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => '{"message":"Product forbidden"}'];
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client(new WordPressHttpClient(), new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return (object) ['new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip'];
+            }
+        );
+
+        try {
+            $result = $client->checkUpdate((object) ['checked' => ['vertex/vertex.php' => '1.0.0']]);
+
+            $this->assertSame(1, $fallbackCalls);
+            $this->assertSame('2.0.0', $result->response['vertex/vertex.php']->new_version);
+        } finally {
+            WordPressTestState::$httpResponse = ['status' => 200, 'body' => '{}'];
+        }
     }
 }
 

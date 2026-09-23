@@ -53,7 +53,7 @@ final class ConnectionStatus
         } catch (TransientException $exception) {
             $this->error = $exception->getMessage();
             // Keep the local connection during an outage and spread retries out.
-            set_transient(self::BACKOFF_TRANSIENT, $credentialHash, wp_rand(30, 60));
+            set_transient(self::BACKOFF_TRANSIENT, $credentialHash, wp_rand(60, 120));
 
             return true;
         } catch (RequestException $exception) {

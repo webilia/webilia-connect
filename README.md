@@ -39,10 +39,14 @@ the adapter uses the conventional `{integration}.update` capability name.
 WordPress products can use `new WordPress\\ConnectionStatus($client)` and call
 `isConnected()` when a page needs a verified connection state. Successful
 checks are cached for five minutes across requests. A transient API failure
-keeps the local connection and delays the next status attempt by 30–60 seconds.
+keeps the local connection and delays the next status attempt by 60–120 seconds.
 Call `ConnectionStatus::clearCache()` after a completed connection or disconnect.
 Constructing the helper does not contact the API; `Client::verifyConnection()`
 remains the direct, uncached check.
+
+The HTTP adapter treats a non-JSON `403` from upstream infrastructure as
+transient. JSON application `403` responses remain request errors, so product
+denials can still use a configured legacy update fallback.
 
 ## Versioning and consumer releases
 
