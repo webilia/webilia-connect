@@ -5,6 +5,8 @@ namespace Webilia\Connect\WordPress;
 use PHPUnit\Framework\TestCase;
 use Webilia\Connect\Client;
 use Webilia\Connect\Contracts\HttpClient;
+use Webilia\Connect\Exception\RequestException;
+use Webilia\Connect\Exception\TransientException;
 
 class WordPressStorageTest extends TestCase
 {
@@ -86,6 +88,11 @@ class WordPressStorageTest extends TestCase
 
 class WordPressHttpClientTest extends TestCase
 {
+    protected function setUp(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 200, 'body' => '{}'];
+    }
+
     public function test_empty_successful_response_returns_an_empty_payload(): void
     {
         WordPressTestState::$httpResponse = ['status' => 204, 'body' => ''];
@@ -93,6 +100,128 @@ class WordPressHttpClientTest extends TestCase
         $payload = (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/disconnect', []);
 
         $this->assertSame([], $payload);
+    }
+
+    public function test_rate_limit_and_server_errors_are_transient(): void
+    {
+        foreach ([429, 503] as $status) {
+            WordPressTestState::$httpResponse = ['status' => $status, 'body' => '{"message":"Try later"}'];
+
+            try {
+                (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/status', []);
+                $this->fail('Expected a transient failure.');
+            } catch (TransientException $exception) {
+                $this->assertSame('Try later', $exception->getMessage());
+            }
+        }
+    }
+
+    public function test_unauthorized_status_is_a_permanent_request_error(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 401, 'body' => '{"message":"Revoked"}'];
+
+        $this->expectException(RequestException::class);
+        $this->expectExceptionCode(401);
+        (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/status', []);
+    }
+
+    public function test_network_error_is_transient(): void
+    {
+        WordPressTestState::$httpResponse = new TestHttpError('Connection timed out');
+
+        $this->expectException(TransientException::class);
+        $this->expectExceptionMessage('Connection timed out');
+        (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/status', []);
+    }
+
+    public function test_non_json_forbidden_response_is_transient(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => 'Forbidden'];
+
+        $this->expectException(TransientException::class);
+        (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/status', []);
+    }
+
+    public function test_json_application_forbidden_response_remains_permanent(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => '{"message":"Product forbidden"}'];
+
+        $this->expectException(RequestException::class);
+        $this->expectExceptionCode(403);
+        (new WordPressHttpClient())->post('https://api.webilia.test/v1/connect/integrations/product/updates', []);
+    }
+}
+
+class ConnectionStatusTest extends TestCase
+{
+    protected function setUp(): void
+    {
+        WordPressTestState::$transients = [];
+    }
+
+    public function test_successful_status_is_cached_across_requests(): void
+    {
+        $http = new WordPressSequenceHttpClient([
+            ['data' => ['status' => 'active', 'site_url' => 'https://example.test']],
+        ]);
+        $client = new Client($http, new WordPressMemoryStorage(), 'https://api.webilia.test', 'https://example.test');
+        $status = new ConnectionStatus($client);
+
+        $this->assertSame(0, $http->calls());
+        $this->assertTrue($status->isConnected());
+        $this->assertTrue((new ConnectionStatus($client))->isConnected());
+        $this->assertSame(1, $http->calls());
+    }
+
+    public function test_transient_status_failure_backs_off_without_revoking(): void
+    {
+        $storage = new WordPressMemoryStorage();
+        $http = new WordPressSequenceHttpClient([
+            new TransientException('Timeout'),
+            ['data' => ['status' => 'active', 'site_url' => 'https://example.test']],
+        ]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->assertTrue((new ConnectionStatus($client))->isConnected());
+        $this->assertNotNull($storage->connection());
+        $this->assertTrue((new ConnectionStatus($client))->isConnected());
+        $this->assertSame(1, $http->calls());
+        $this->assertGreaterThanOrEqual(time() + 59, WordPressTestState::$transients['webilia_connect_status_backoff']['expires_at']);
+        $this->assertLessThanOrEqual(time() + 120, WordPressTestState::$transients['webilia_connect_status_backoff']['expires_at']);
+
+        delete_transient('webilia_connect_status_backoff');
+        $this->assertTrue((new ConnectionStatus($client))->isConnected());
+        $this->assertSame(2, $http->calls());
+    }
+
+    public function test_unauthorized_status_removes_the_connection(): void
+    {
+        $storage = new WordPressMemoryStorage();
+        $http = new WordPressSequenceHttpClient([new RequestException('Revoked', 401)]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+
+        $this->assertFalse((new ConnectionStatus($client))->isConnected());
+        $this->assertNull($storage->connection());
+        $this->assertSame(1, $http->calls());
+        $this->assertArrayNotHasKey('webilia_connect_status_backoff', WordPressTestState::$transients);
+    }
+
+    public function test_cached_status_does_not_apply_to_a_new_credential(): void
+    {
+        $storage = new WordPressMemoryStorage();
+        $http = new WordPressSequenceHttpClient([
+            ['data' => ['status' => 'active', 'site_url' => 'https://example.test']],
+            ['data' => ['status' => 'active', 'site_url' => 'https://example.test']],
+        ]);
+        $client = new Client($http, $storage, 'https://api.webilia.test', 'https://example.test');
+        $this->assertTrue((new ConnectionStatus($client))->isConnected());
+
+        $connection = $storage->connection();
+        $connection['credential'] = 'wcx_replacement';
+        $storage->saveConnection($connection);
+
+        $this->assertTrue((new ConnectionStatus($client))->isConnected());
+        $this->assertSame(2, $http->calls());
     }
 }
 
@@ -200,17 +329,126 @@ class UpdateClientTest extends TestCase
         $this->assertSame(1, $http->calls());
         $this->assertSame(1, $fallbackCalls);
     }
+
+    public function test_transient_update_failure_does_not_call_legacy_fallback(): void
+    {
+        $http = new WordPressSequenceHttpClient([new TransientException('Rate limited')]);
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client($http, new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return (object) ['new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip'];
+            }
+        );
+        $transient = (object) ['checked' => ['vertex/vertex.php' => '1.0.0']];
+
+        $result = $client->checkUpdate($transient);
+        $client->checkUpdate($transient);
+
+        $this->assertSame(1, $http->calls());
+        $this->assertSame(0, $fallbackCalls);
+        $this->assertObjectNotHasProperty('response', $result);
+    }
+
+    public function test_unavailable_connect_product_uses_legacy_fallback(): void
+    {
+        $http = new WordPressSequenceHttpClient([new RequestException('Product unavailable', 404)]);
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client($http, new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return (object) ['new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip'];
+            }
+        );
+        $transient = (object) ['checked' => ['vertex/vertex.php' => '1.0.0']];
+
+        $result = $client->checkUpdate($transient);
+
+        $this->assertSame(1, $http->calls());
+        $this->assertSame(1, $fallbackCalls);
+        $this->assertSame('2.0.0', $result->response['vertex/vertex.php']->new_version);
+    }
+
+    public function test_waf_forbidden_update_does_not_call_legacy_fallback(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => 'Forbidden'];
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client(new WordPressHttpClient(), new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return false;
+            }
+        );
+
+        try {
+            $result = $client->checkUpdate((object) ['checked' => ['vertex/vertex.php' => '1.0.0']]);
+
+            $this->assertSame(0, $fallbackCalls);
+            $this->assertObjectNotHasProperty('response', $result);
+        } finally {
+            WordPressTestState::$httpResponse = ['status' => 200, 'body' => '{}'];
+        }
+    }
+
+    public function test_json_application_forbidden_update_still_uses_legacy_fallback(): void
+    {
+        WordPressTestState::$httpResponse = ['status' => 403, 'body' => '{"message":"Product forbidden"}'];
+        $fallbackCalls = 0;
+        $client = new UpdateClient(
+            new Client(new WordPressHttpClient(), new WordPressMemoryStorage()),
+            'vertex-addons-pro',
+            '1.0.0',
+            'vertex/vertex.php',
+            '',
+            '',
+            function () use (&$fallbackCalls) {
+                ++$fallbackCalls;
+
+                return (object) ['new_version' => '2.0.0', 'download_link' => 'https://example.test/update.zip'];
+            }
+        );
+
+        try {
+            $result = $client->checkUpdate((object) ['checked' => ['vertex/vertex.php' => '1.0.0']]);
+
+            $this->assertSame(1, $fallbackCalls);
+            $this->assertSame('2.0.0', $result->response['vertex/vertex.php']->new_version);
+        } finally {
+            WordPressTestState::$httpResponse = ['status' => 200, 'body' => '{}'];
+        }
+    }
 }
 
 class WordPressSequenceHttpClient implements HttpClient
 {
-    /** @var array<int, array<string, mixed>> */
+    /** @var array<int, array<string, mixed>|\Throwable> */
     private $responses;
     private $calls = 0;
     /** @var array<int, array<string, mixed>> */
     private $payloads = [];
 
-    /** @param array<int, array<string, mixed>> $responses */
+    /** @param array<int, array<string, mixed>|\Throwable> $responses */
     public function __construct(array $responses)
     {
         $this->responses = $responses;
@@ -221,7 +459,12 @@ class WordPressSequenceHttpClient implements HttpClient
         ++$this->calls;
         $this->payloads[] = $payload;
 
-        return array_shift($this->responses) ?? [];
+        $response = array_shift($this->responses);
+        if ($response instanceof \Throwable) {
+            throw $response;
+        }
+
+        return $response ?? [];
     }
 
     public function calls(): int
@@ -285,8 +528,16 @@ class WordPressTestState
     /** @var array<string, array{value:mixed, expires_at:int}> */
     public static $transients = [];
     public static $salt = 'initial';
-    /** @var array{status:int, body:string} */
+    /** @var array{status:int, body:string}|TestHttpError */
     public static $httpResponse = ['status' => 200, 'body' => '{}'];
+}
+
+class TestHttpError
+{
+    private string $message;
+
+    public function __construct(string $message) { $this->message = $message; }
+    public function get_error_message(): string { return $this->message; }
 }
 
 function add_filter($hook, $callback, $priority = 10, $acceptedArgs = 1): void {}
@@ -367,6 +618,11 @@ function wp_json_encode($value): string
     return json_encode($value);
 }
 
+function wp_rand($min, $max): int
+{
+    return $min;
+}
+
 function wp_salt($scheme = 'auth'): string
 {
     return WordPressTestState::$salt;
@@ -379,7 +635,7 @@ function wp_remote_post($url, array $args)
 
 function is_wp_error($thing): bool
 {
-    return false;
+    return $thing instanceof TestHttpError;
 }
 
 function wp_remote_retrieve_response_code(array $response): int

@@ -4,6 +4,7 @@ namespace Webilia\Connect\WordPress;
 
 use Webilia\Connect\Client;
 use Webilia\Connect\Contracts\UpdateClient as UpdateClientContract;
+use Webilia\Connect\Exception\TransientException;
 
 final class UpdateClient implements UpdateClientContract
 {
@@ -110,6 +111,10 @@ final class UpdateClient implements UpdateClientContract
             if (($update['allowed'] ?? null) === true) {
                 return $this->information = $update;
             }
+        } catch (TransientException $exception) {
+            // The legacy updater uses the same API infrastructure. Let WordPress
+            // retry later instead of sending a second request during an outage.
+            return null;
         } catch (\Throwable $exception) {
             // A connected account may not own every installed product. Let the
             // host application preserve its legacy update channel in that case.

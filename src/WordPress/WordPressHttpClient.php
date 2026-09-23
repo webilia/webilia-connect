@@ -48,7 +48,9 @@ final class WordPressHttpClient implements GetHttpClient
 
         $body = json_decode($rawBody, true);
         if (! is_array($body)) {
-            if ($this->isTransientStatus($status)) {
+            // Connect API errors are JSON. A non-JSON 403 comes from an upstream
+            // block such as AWS WAF, so retry it instead of treating it as denial.
+            if ($status === 403 || $this->isTransientStatus($status)) {
                 throw new TransientException('Webilia Connect returned an invalid response.');
             }
 
