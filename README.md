@@ -44,6 +44,11 @@ Call `ConnectionStatus::clearCache()` after a completed connection or disconnect
 Constructing the helper does not contact the API; `Client::verifyConnection()`
 remains the direct, uncached check.
 
+`Client::serviceToken($audience)` exchanges the site's Connect credential for a
+short-lived token for an approved Webilia service. Pass the returned token to
+that service promptly. The SDK does not store it or expose credit reservation
+operations; those are available only to authenticated service backends.
+
 The HTTP adapter treats a non-JSON `403` from upstream infrastructure as
 transient. JSON application `403` responses remain request errors, so product
 denials can still use a configured legacy update fallback.

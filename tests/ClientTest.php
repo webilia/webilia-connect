@@ -844,6 +844,45 @@ class ClientTest extends TestCase
         $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
     }
 
+    public function test_service_token_exchange_uses_connect_credential_without_storing_token(): void
+    {
+        $http = new class implements HttpClient {
+            public string $url = '';
+            public array $payload = [];
+            public array $headers = [];
+
+            public function post(string $url, array $payload, array $headers = []): array
+            {
+                $this->url = $url;
+                $this->payload = $payload;
+                $this->headers = $headers;
+
+                return ['data' => ['token' => 'short-lived-token', 'expires_at' => 123456]];
+            }
+        };
+        $storage = new InMemoryStorage($this->connection());
+
+        $result = (new Client($http, $storage))->serviceToken('service-a');
+
+        $this->assertSame('short-lived-token', $result['token']);
+        $this->assertSame('/v1/connect/service-tokens', parse_url($http->url, PHP_URL_PATH));
+        $this->assertSame(['audience' => 'service-a'], $http->payload);
+        $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
+        $this->assertArrayNotHasKey('token', $storage->connection());
+    }
+
+    public function test_rejected_service_token_exchange_forgets_revoked_connection(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+
+        $this->expectException(RequestException::class);
+        try {
+            (new Client(new RevokedHttpClient(), $storage))->serviceToken('service-a');
+        } finally {
+            $this->assertNull($storage->connection());
+        }
+    }
+
     private function connection(): array
     {
         return [
