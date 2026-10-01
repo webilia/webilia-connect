@@ -331,9 +331,14 @@ final class Client
         $connection = $this->requiredConnection();
 
         try {
-            return $this->data($this->http->post($this->endpoint('/v1/connect/service-tokens'), [
+            $data = $this->data($this->http->post($this->endpoint('/v1/connect/service-tokens'), [
                 'audience' => $audience,
             ], $this->bearer($connection)));
+            if (! is_string($data['token'] ?? null) || trim($data['token']) === '') {
+                throw new RuntimeException('Webilia Connect did not return a service token.');
+            }
+
+            return $data;
         } catch (RequestException $exception) {
             if ($exception->getCode() === 401) {
                 $this->forgetRejectedConnection($connection);

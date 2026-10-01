@@ -871,6 +871,31 @@ class ClientTest extends TestCase
         $this->assertArrayNotHasKey('token', $storage->connection());
     }
 
+    /** @dataProvider invalidServiceTokenResponses */
+    public function test_service_token_exchange_rejects_a_successful_response_without_a_usable_token(array $response): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+
+        try {
+            (new Client(new SuccessfulHttpClient($response), $storage))->serviceToken('service-a');
+            $this->fail('A missing service token must not be reported as a successful exchange.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame('Webilia Connect did not return a service token.', $exception->getMessage());
+            $this->assertSame('wcx_test', $storage->connection()['credential']);
+        }
+    }
+
+    public function invalidServiceTokenResponses(): array
+    {
+        return [
+            'empty response' => [[]],
+            'null data' => [['data' => null]],
+            'missing token' => [['data' => ['expires_at' => 123456]]],
+            'non-string token' => [['data' => ['token' => 123]]],
+            'blank token' => [['data' => ['token' => '  ']]],
+        ];
+    }
+
     public function test_rejected_service_token_exchange_forgets_revoked_connection(): void
     {
         $storage = new InMemoryStorage($this->connection());
