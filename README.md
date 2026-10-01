@@ -46,7 +46,9 @@ remains the direct, uncached check.
 
 `Client::serviceToken($audience)` exchanges the site's Connect credential for a
 short-lived token for an approved Webilia service. Pass the returned token to
-that service promptly. The SDK does not store it or expose credit reservation
+that service promptly. The token proves the connected site's identity; the
+service can ask API to evaluate a Connect integration and capability before
+granting access. The SDK does not store the token or expose credit reservation
 operations; those are available only to authenticated service backends.
 
 The HTTP adapter treats a non-JSON `403` from upstream infrastructure as
