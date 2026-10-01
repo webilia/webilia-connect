@@ -319,6 +319,36 @@ final class Client
     }
 
     /**
+     * Obtain a short-lived identity token for an approved Webilia service.
+     * The token is returned to the caller and is never persisted by this SDK.
+     *
+     * @return array<string, mixed>
+     */
+    public function serviceToken(string $audience): array
+    {
+        $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
+
+        try {
+            $data = $this->data($this->http->post($this->endpoint('/v1/connect/service-tokens'), [
+                'audience' => $audience,
+            ], $this->bearer($connection)));
+            if (! is_string($data['token'] ?? null) || trim($data['token']) === '') {
+                throw new RuntimeException('Webilia Connect did not return a service token.');
+            }
+
+            return $data;
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) {
+                $this->forgetRejectedConnection($connection);
+            }
+
+            throw $exception;
+        }
+    }
+
+    /**
      * Execute one bounded, metered Overture Places search for the connected site.
      *
      * @param array<string, mixed> $request
