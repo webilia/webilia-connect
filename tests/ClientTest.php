@@ -823,7 +823,7 @@ class ClientTest extends TestCase
         ]);
 
         $this->assertSame('restaurant', $categories['categories'][0]['code']);
-        $this->assertSame(1, $search['meta']['credits_charged']);
+        $this->assertSame('1.000', $search['meta']['credits_charged']);
         $this->assertSame('/v1/connect/overture/places/categories', parse_url($http->getUrl, PHP_URL_PATH));
         $this->assertSame(['q' => 'restaurant', 'limit' => 10], $http->query);
         $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
@@ -838,7 +838,7 @@ class ClientTest extends TestCase
 
         $balance = $client->creditBalance();
 
-        $this->assertSame(42, $balance['credits_balance']);
+        $this->assertSame('42.000', $balance['credits_balance']);
         $this->assertSame('/v1/connect/credits/balance', parse_url($http->getUrl, PHP_URL_PATH));
         $this->assertSame([], $http->query);
         $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
@@ -1433,7 +1433,7 @@ class OvertureHttpClient implements GetHttpClient
         $this->headers = $headers;
 
         if (substr($url, -strlen('/credits/balance')) === '/credits/balance') {
-            return ['data' => ['credits_balance' => 42]];
+            return ['data' => ['credits_balance' => '42.000']];
         }
 
         return ['data' => ['taxonomy_version' => '2026-03-04', 'categories' => [['code' => 'restaurant']]]];
@@ -1445,6 +1445,6 @@ class OvertureHttpClient implements GetHttpClient
         $this->payload = $payload;
         $this->headers = $headers;
 
-        return ['data' => ['places' => [], 'meta' => ['credits_charged' => 1]]];
+        return ['data' => ['places' => [], 'meta' => ['credits_charged' => '1.000']]];
     }
 }
