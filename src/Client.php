@@ -7,6 +7,7 @@ use Webilia\Connect\Contracts\ConditionalConnectionStorage;
 use Webilia\Connect\Contracts\GetHttpClient;
 use Webilia\Connect\Contracts\HttpClient;
 use Webilia\Connect\Contracts\Storage;
+use Webilia\Connect\Contracts\TimeoutHttpClient;
 use Webilia\Connect\Exception\RequestException;
 use Webilia\Connect\Exception\TransientException;
 
@@ -380,13 +381,13 @@ final class Client
     /** @param array<int, array<string, mixed>> $listings @return array<string, mixed> */
     public function overturePlacesMatch(string $idempotencyKey, array $listings): array
     {
-        return $this->overtureMaintenancePost('match', ['idempotency_key' => $idempotencyKey, 'listings' => $listings]);
+        return $this->overtureMaintenancePost('match', ['idempotency_key' => $idempotencyKey, 'listings' => array_values($listings)]);
     }
 
     /** @param array<int, string> $placeIds @return array<string, mixed> */
     public function overturePlacesLookup(string $idempotencyKey, array $placeIds): array
     {
-        return $this->overtureMaintenancePost('lookup', ['idempotency_key' => $idempotencyKey, 'place_ids' => $placeIds]);
+        return $this->overtureMaintenancePost('lookup', ['idempotency_key' => $idempotencyKey, 'place_ids' => array_values($placeIds)]);
     }
 
     /** @param array<string, mixed> $request @return array<string, mixed> */
@@ -399,7 +400,7 @@ final class Client
         try {
             $url = $this->endpoint('/v1/connect/overture/places/'.$path);
             $headers = $this->bearer($connection);
-            $response = method_exists($this->http, 'postWithTimeout')
+            $response = $this->http instanceof TimeoutHttpClient
                 ? $this->http->postWithTimeout($url, $request, $headers, 30)
                 : $this->http->post($url, $request, $headers);
 

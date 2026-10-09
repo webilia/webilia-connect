@@ -3,10 +3,11 @@
 namespace Webilia\Connect\WordPress;
 
 use Webilia\Connect\Contracts\GetHttpClient;
+use Webilia\Connect\Contracts\TimeoutHttpClient;
 use Webilia\Connect\Exception\RequestException;
 use Webilia\Connect\Exception\TransientException;
 
-final class WordPressHttpClient implements GetHttpClient
+final class WordPressHttpClient implements GetHttpClient, TimeoutHttpClient
 {
     /** @inheritDoc */
     public function post(string $url, array $payload, array $headers = []): array
