@@ -831,6 +831,47 @@ class ClientTest extends TestCase
         $this->assertSame(['restaurant'], $http->payload['categories']);
     }
 
+    public function test_overture_maintenance_methods_use_connected_site_and_expected_paths(): void
+    {
+        $http = new class extends OvertureHttpClient implements \Webilia\Connect\Contracts\TimeoutHttpClient {
+            public int $timeout = 0;
+
+            public function postWithTimeout(string $url, array $payload, array $headers, int $timeout): array
+            {
+                $this->timeout = $timeout;
+
+                return $this->post($url, $payload, $headers);
+            }
+        };
+        $client = new Client($http, new InMemoryStorage($this->connection()));
+
+        $client->overtureMaintenanceQuote('match', 3);
+        $this->assertSame('/v1/connect/overture/places/quote', parse_url($http->postUrl, PHP_URL_PATH));
+        $this->assertSame(['operation' => 'match', 'count' => 3], $http->payload);
+        $this->assertSame(30, $http->timeout);
+
+        $client->overturePlacesMatch('c17d7103-4961-4eba-b1b8-c9733eafaf36', [4 => ['reference' => '1', 'name' => 'Cafe', 'address' => 'Main Street']]);
+        $this->assertSame('/v1/connect/overture/places/match', parse_url($http->postUrl, PHP_URL_PATH));
+        $this->assertSame('Bearer wcx_test', $http->headers['Authorization']);
+        $this->assertSame([['reference' => '1', 'name' => 'Cafe', 'address' => 'Main Street']], $http->payload['listings']);
+
+        $client->overturePlacesLookup('a9d30794-b47e-4d57-9fb4-2b77d9d90a61', [3 => 'place-1']);
+        $this->assertSame('/v1/connect/overture/places/lookup', parse_url($http->postUrl, PHP_URL_PATH));
+        $this->assertSame(['place-1'], $http->payload['place_ids']);
+    }
+
+    public function test_maintenance_uses_standard_post_for_clients_without_the_timeout_contract(): void
+    {
+        $http = new class extends OvertureHttpClient {
+            private function postWithTimeout(): void {}
+        };
+        $client = new Client($http, new InMemoryStorage($this->connection()));
+
+        $client->overtureMaintenanceQuote('lookup', 1);
+
+        $this->assertSame('/v1/connect/overture/places/quote', parse_url($http->postUrl, PHP_URL_PATH));
+    }
+
     public function test_credit_balance_uses_the_connected_sites_bearer_credential(): void
     {
         $http = new OvertureHttpClient();

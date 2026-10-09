@@ -3,16 +3,23 @@
 namespace Webilia\Connect\WordPress;
 
 use Webilia\Connect\Contracts\GetHttpClient;
+use Webilia\Connect\Contracts\TimeoutHttpClient;
 use Webilia\Connect\Exception\RequestException;
 use Webilia\Connect\Exception\TransientException;
 
-final class WordPressHttpClient implements GetHttpClient
+final class WordPressHttpClient implements GetHttpClient, TimeoutHttpClient
 {
     /** @inheritDoc */
     public function post(string $url, array $payload, array $headers = []): array
     {
+        return $this->postWithTimeout($url, $payload, $headers, 15);
+    }
+
+    /** @param array<string, mixed> $payload @param array<string, string> $headers */
+    public function postWithTimeout(string $url, array $payload, array $headers, int $timeout): array
+    {
         $response = wp_remote_post($url, [
-            'timeout' => 15,
+            'timeout' => $timeout,
             'headers' => array_merge(['Accept' => 'application/json', 'Content-Type' => 'application/json'], $headers),
             'body' => wp_json_encode($payload),
         ]);
@@ -51,7 +58,7 @@ final class WordPressHttpClient implements GetHttpClient
             // Connect API errors are JSON. A non-JSON 403 comes from an upstream
             // block such as AWS WAF, so retry it instead of treating it as denial.
             if ($status === 403 || $this->isTransientStatus($status)) {
-                throw new TransientException('Webilia Connect returned an invalid response.');
+                throw new TransientException('Webilia Connect returned an invalid response.', $status);
             }
 
             throw new RequestException('Webilia Connect returned an invalid response.', $status);
@@ -60,7 +67,7 @@ final class WordPressHttpClient implements GetHttpClient
         if ($status < 200 || $status >= 300) {
             $message = (string) ($body['message'] ?? 'Webilia Connect request failed.');
             if ($this->isTransientStatus($status)) {
-                throw new TransientException($message);
+                throw new TransientException($message, $status);
             }
 
             throw new RequestException($message, $status);
