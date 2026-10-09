@@ -371,6 +371,46 @@ final class Client
         }
     }
 
+    /** @return array<string, mixed> */
+    public function overtureMaintenanceQuote(string $operation, int $count): array
+    {
+        return $this->overtureMaintenancePost('quote', ['operation' => $operation, 'count' => $count]);
+    }
+
+    /** @param array<int, array<string, mixed>> $listings @return array<string, mixed> */
+    public function overturePlacesMatch(string $idempotencyKey, array $listings): array
+    {
+        return $this->overtureMaintenancePost('match', ['idempotency_key' => $idempotencyKey, 'listings' => $listings]);
+    }
+
+    /** @param array<int, string> $placeIds @return array<string, mixed> */
+    public function overturePlacesLookup(string $idempotencyKey, array $placeIds): array
+    {
+        return $this->overtureMaintenancePost('lookup', ['idempotency_key' => $idempotencyKey, 'place_ids' => $placeIds]);
+    }
+
+    /** @param array<string, mixed> $request @return array<string, mixed> */
+    private function overtureMaintenancePost(string $path, array $request): array
+    {
+        $connection = $this->requiredConnection();
+        $this->retryPendingRevocation($connection);
+        $connection = $this->requiredConnection();
+
+        try {
+            $url = $this->endpoint('/v1/connect/overture/places/'.$path);
+            $headers = $this->bearer($connection);
+            $response = method_exists($this->http, 'postWithTimeout')
+                ? $this->http->postWithTimeout($url, $request, $headers, 30)
+                : $this->http->post($url, $request, $headers);
+
+            return $this->data($response);
+        } catch (RequestException $exception) {
+            if ($exception->getCode() === 401) $this->forgetRejectedConnection($connection);
+
+            throw $exception;
+        }
+    }
+
     public function disconnect(): void
     {
         $connection = $this->connection();
