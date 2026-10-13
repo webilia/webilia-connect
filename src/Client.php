@@ -199,14 +199,14 @@ final class Client
         return $completedConnection;
     }
 
-    public function authorize(string $integration, string $capability): AuthorizationResult
+    public function authorize(string $integration, string $capability, bool $forceRefresh = false): AuthorizationResult
     {
         $connection = $this->requiredConnection();
         $this->retryPendingRevocation($connection);
         $connection = $this->requiredConnection();
         $cacheKey = $this->cacheKey($integration, $capability, $connection);
 
-        $cached = $this->cachedAuthorization($cacheKey, true);
+        $cached = $forceRefresh ? null : $this->cachedAuthorization($cacheKey, true);
         if ($cached !== null) {
             return $cached;
         }
@@ -243,6 +243,18 @@ final class Client
             }
 
             throw $exception;
+        }
+    }
+
+    public function clearAuthorization(string $integration, string $capability): void
+    {
+        $connection = $this->connection();
+        if ($connection === null) {
+            return;
+        }
+        $cacheKey = $this->cacheKey($integration, $capability, $connection);
+        if ($cacheKey !== null) {
+            $this->invalidateCachedAuthorization($cacheKey, $connection);
         }
     }
 
