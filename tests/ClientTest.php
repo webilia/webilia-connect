@@ -15,6 +15,43 @@ use Webilia\Connect\Exception\TransientException;
 
 class ClientTest extends TestCase
 {
+    public function test_forced_refresh_bypasses_online_cache_and_clears_a_denied_grant(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $key = $this->authorizationKey('vertex-addons-pro', 'vertex.pro.use');
+        $storage->saveAuthorization($key, ['allowed' => true, 'cache_until' => time() + 60, 'online_cache' => true]);
+        $http = new SequenceHttpClient([['data' => ['allowed' => false]]]);
+        $result = (new Client($http, $storage))->authorize('vertex-addons-pro', 'vertex.pro.use', true);
+        $this->assertFalse($result->allowed());
+        $this->assertSame(1, $http->calls());
+        $this->assertNull($storage->authorization($key));
+    }
+
+    public function test_forced_refresh_keeps_bounded_outage_fallback(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $expiry = time() + 60;
+        $storage->saveAuthorization($this->authorizationKey('vertex-addons-pro', 'vertex.pro.use'), ['allowed' => true, 'cache_until' => $expiry, 'online_cache' => true]);
+        $result = (new Client(new FailingHttpClient(), $storage))->authorize('vertex-addons-pro', 'vertex.pro.use', true);
+        $this->assertTrue($result->allowed());
+        $this->assertTrue($result->payload()['cached']);
+        $this->assertSame($expiry, $result->cacheUntil());
+    }
+
+    public function test_public_invalidation_removes_only_the_requested_capability(): void
+    {
+        $storage = new InMemoryStorage($this->connection());
+        $use = $this->authorizationKey('vertex-addons-pro', 'vertex.pro.use');
+        $update = $this->authorizationKey('vertex-addons-pro', 'vertex.pro.update');
+        foreach ([$use, $update] as $key) {
+            $storage->saveAuthorization($key, ['allowed' => true, 'cache_until' => time() + 60]);
+        }
+        (new Client(new FailingHttpClient(), $storage))->clearAuthorization('vertex-addons-pro', 'vertex.pro.use');
+        $this->assertNull($storage->authorization($use));
+        $this->assertNotNull($storage->authorization($update));
+        $this->assertNotNull($storage->connection());
+    }
+
     public function test_authorization_uses_a_cached_allowance_during_an_outage(): void
     {
         $storage = new InMemoryStorage([

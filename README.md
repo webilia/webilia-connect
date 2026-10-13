@@ -36,6 +36,12 @@ the adapter uses the conventional `{integration}.update` capability name.
 
 ## On-demand status checks
 
+`Client::authorize($integration, $capability, true)` forces an online refresh,
+bypassing the normal online cache while retaining unexpired outage fallback.
+A hard denial still invalidates the previous grant. Use
+`Client::clearAuthorization($integration, $capability)` to remove a product's
+cached capability without reproducing SDK cache keys or disconnecting the site.
+
 WordPress products can use `new WordPress\\ConnectionStatus($client)` and call
 `isConnected()` when a page needs a verified connection state. Successful
 checks are cached for five minutes across requests. A transient API failure
